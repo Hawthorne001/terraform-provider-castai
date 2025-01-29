@@ -66,13 +66,14 @@ resource "castai_node_configuration" "default" {
 - `container_runtime` (String) Optional container runtime to be used by kubelet. Applicable for EKS only.  Supported values include: `dockerd`, `containerd`
 - `disk_cpu_ratio` (Number) Disk to CPU ratio. Sets the number of GiBs to be added for every CPU on the node. Defaults to 0
 - `docker_config` (String) Optional docker daemon configuration properties in JSON format. Provide only properties that you want to override. Applicable for EKS only. [Available values](https://docs.docker.com/engine/reference/commandline/dockerd/#daemon-configuration-file)
+- `drain_timeout_sec` (Number) Timeout in seconds for draining the node. Defaults to 0
 - `eks` (Block List, Max: 1) (see [below for nested schema](#nestedblock--eks))
 - `gke` (Block List, Max: 1) (see [below for nested schema](#nestedblock--gke))
-- `image` (String) Image to be used while provisioning the node. If nothing is provided will be resolved to latest available image based on Kubernetes version if possible
+- `image` (String) Image to be used while provisioning the node. If nothing is provided will be resolved to latest available image based on Image family, Kubernetes version and node architecture if possible. See Cast.ai documentation for details.
 - `init_script` (String) Init script to be run on your instance at launch. Should not contain any sensitive data. Value should be base64 encoded
 - `kops` (Block List, Max: 1) (see [below for nested schema](#nestedblock--kops))
 - `kubelet_config` (String) Optional kubelet configuration properties in JSON format. Provide only properties that you want to override. Applicable for EKS only. [Available values](https://kubernetes.io/docs/reference/config-api/kubelet-config.v1beta1/)
-- `min_disk_size` (Number) Minimal disk size in GiB. Defaults to 100, min 30, max 1000
+- `min_disk_size` (Number) Minimal disk size in GiB. Defaults to 100, min 30, max 65536
 - `ssh_public_key` (String) SSH public key to be used for provisioned nodes
 - `tags` (Map of String) Tags to be added on cloud instances for provisioned nodes
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
@@ -86,8 +87,50 @@ resource "castai_node_configuration" "default" {
 
 Optional:
 
+- `aks_image_family` (String) Image OS Family to use when provisioning node in AKS. If both image and family are provided, the system will use provided image and provisioning logic for given family. If only image family is provided, the system will attempt to resolve the latest image from that family based on kubernetes version and node architecture. If image family is omitted, a default family (based on cloud provider) will be used. See Cast.ai documentation for details. Possible values: (ubuntu,azure-linux)
+- `ephemeral_os_disk` (Block List, Max: 1) Ephemeral OS disk configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--aks--ephemeral_os_disk))
+- `loadbalancers` (Block List) Load balancer configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--aks--loadbalancers))
 - `max_pods_per_node` (Number) Maximum number of pods that can be run on a node, which affects how many IP addresses you will need for each node. Defaults to 30
 - `os_disk_type` (String) Type of managed os disk attached to the node. (See [disk types](https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types)). One of: standard, standard-ssd, premium-ssd (ultra and premium-ssd-v2 are not supported for os disk)
+
+<a id="nestedblock--aks--ephemeral_os_disk"></a>
+### Nested Schema for `aks.ephemeral_os_disk`
+
+Required:
+
+- `placement` (String) Placement of the ephemeral OS disk. One of: cacheDisk, resourceDisk
+
+Optional:
+
+- `cache` (String) Cache type for the ephemeral OS disk. One of: ReadOnly, ReadWrite
+
+
+<a id="nestedblock--aks--loadbalancers"></a>
+### Nested Schema for `aks.loadbalancers`
+
+Optional:
+
+- `id` (String) The full ID of the load balancer in azure.
+- `ip_based_backend_pools` (Block List) IP based backend pools configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--aks--loadbalancers--ip_based_backend_pools))
+- `name` (String, Deprecated) Name of load balancer
+- `nic_based_backend_pools` (Block List) NIC based backend pools configuration for CAST provisioned nodes. (see [below for nested schema](#nestedblock--aks--loadbalancers--nic_based_backend_pools))
+
+<a id="nestedblock--aks--loadbalancers--ip_based_backend_pools"></a>
+### Nested Schema for `aks.loadbalancers.ip_based_backend_pools`
+
+Required:
+
+- `name` (String) Name of the ip based backend pool
+
+
+<a id="nestedblock--aks--loadbalancers--nic_based_backend_pools"></a>
+### Nested Schema for `aks.loadbalancers.nic_based_backend_pools`
+
+Required:
+
+- `name` (String) Name of the NIC based backend pool
+
+
 
 
 <a id="nestedblock--eks"></a>
@@ -101,13 +144,30 @@ Required:
 Optional:
 
 - `dns_cluster_ip` (String) IP address to use for DNS queries within the cluster
+- `eks_image_family` (String) Image OS Family to use when provisioning node in EKS. If both image and family are provided, the system will use provided image and provisioning logic for given family. If only image family is provided, the system will attempt to resolve the latest image from that family based on kubernetes version and node architecture. If image family is omitted, a default family (based on cloud provider) will be used. See Cast.ai documentation for details. Possible values: (al2,al2023,bottlerocket)
 - `imds_hop_limit` (Number) Allow configure the IMDSv2 hop limit, the default is 2
 - `imds_v1` (Boolean) When the value is true both IMDSv1 and IMDSv2 are enabled. Setting the value to false disables permanently IMDSv1 and might affect legacy workloads running on the node created with this configuration. The default is true if the flag isn't provided
+- `ips_per_prefix` (Number) Number of IPs per prefix to be used for calculating max pods.
 - `key_pair_id` (String) AWS key pair ID to be used for CAST provisioned nodes. Has priority over ssh_public_key
+- `max_pods_per_node_formula` (String) Formula to calculate the maximum number of pods that can be run on a node. The following list of variables will be bound to a number before evaluating and can be used in the formula: NUM_MAX_NET_INTERFACES, NUM_IP_PER_INTERFACE, NUM_IP_PER_PREFIX, NUM_CPU, NUM_RAM_GB .
+- `node_group_arn` (String) Cluster's node group ARN used for CAST provisioned node pools. Required for hibernate/resume functionality
+- `target_group` (Block List) AWS target groups configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--eks--target_group))
 - `volume_iops` (Number) AWS EBS volume IOPS to be used for CAST provisioned nodes
 - `volume_kms_key_arn` (String) AWS KMS key ARN for encrypting EBS volume attached to the node
 - `volume_throughput` (Number) AWS EBS volume throughput in MiB/s to be used for CAST provisioned nodes
-- `volume_type` (String) AWS EBS volume type to be used for CAST provisioned nodes. One of: gp3, io1, io2
+- `volume_type` (String) AWS EBS volume type to be used for CAST provisioned nodes. One of: gp3, gp2, io1, io2
+
+<a id="nestedblock--eks--target_group"></a>
+### Nested Schema for `eks.target_group`
+
+Required:
+
+- `arn` (String) AWS target group ARN for CAST provisioned nodes
+
+Optional:
+
+- `port` (Number) Port for AWS target group for CAST provisioned nodes
+
 
 
 <a id="nestedblock--gke"></a>
@@ -116,8 +176,37 @@ Optional:
 Optional:
 
 - `disk_type` (String) Type of boot disk attached to the node. (See [disk types](https://cloud.google.com/compute/docs/disks#pdspecs)). One of: pd-standard, pd-balanced, pd-ssd, pd-extreme
+- `loadbalancers` (Block List) Loadboalancer configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--gke--loadbalancers))
 - `max_pods_per_node` (Number) Maximum number of pods that can be run on a node, which affects how many IP addresses you will need for each node. Defaults to 110
 - `network_tags` (List of String) Network tags to be added on a VM. (See [network tags](https://cloud.google.com/vpc/docs/add-remove-network-tags))
+- `use_ephemeral_storage_local_ssd` (Boolean) Use ephemeral storage local SSD. Defaults to false
+- `zones` (List of String, Deprecated) List of preferred availability zones to choose from when provisioning new nodes.
+
+<a id="nestedblock--gke--loadbalancers"></a>
+### Nested Schema for `gke.loadbalancers`
+
+Optional:
+
+- `target_backend_pools` (Block List) Target backend pools configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--gke--loadbalancers--target_backend_pools))
+- `unmanaged_instance_groups` (Block List) Unmanaged instance groups configuration for CAST provisioned nodes (see [below for nested schema](#nestedblock--gke--loadbalancers--unmanaged_instance_groups))
+
+<a id="nestedblock--gke--loadbalancers--target_backend_pools"></a>
+### Nested Schema for `gke.loadbalancers.target_backend_pools`
+
+Required:
+
+- `name` (String) Name of the target group
+
+
+<a id="nestedblock--gke--loadbalancers--unmanaged_instance_groups"></a>
+### Nested Schema for `gke.loadbalancers.unmanaged_instance_groups`
+
+Required:
+
+- `name` (String) Name of the instance group
+- `zone` (String) Zone of the instance group
+
+
 
 
 <a id="nestedblock--kops"></a>

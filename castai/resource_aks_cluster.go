@@ -6,7 +6,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -125,6 +124,14 @@ func resourceCastaiAKSClusterRead(ctx context.Context, data *schema.ResourceData
 		return nil
 	}
 
+	if resp.JSON200.CredentialsId != nil && *resp.JSON200.CredentialsId != data.Get(FieldClusterCredentialsId) {
+		log.Printf("[WARN] Drift in credentials from state (%q) and in API (%q), resetting client ID to force re-applying credentials from configuration",
+			data.Get(FieldClusterCredentialsId), *resp.JSON200.CredentialsId)
+		if err := data.Set(FieldAKSClusterClientID, "credentials-drift-detected-force-apply"); err != nil {
+			return diag.FromErr(fmt.Errorf("setting client ID: %w", err))
+		}
+	}
+
 	if err := data.Set(FieldClusterCredentialsId, *resp.JSON200.CredentialsId); err != nil {
 		return diag.FromErr(fmt.Errorf("setting credentials: %w", err))
 	}
@@ -186,12 +193,13 @@ func resourceCastaiAKSClusterUpdate(ctx context.Context, data *schema.ResourceDa
 	return resourceCastaiAKSClusterRead(ctx, data, meta)
 }
 
-func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, client *sdk.ClientWithResponses) error {
+func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, client sdk.ClientWithResponsesInterface) error {
 	if !data.HasChanges(
 		FieldAKSClusterClientID,
 		FieldAKSClusterClientSecret,
 		FieldAKSClusterTenantID,
 		FieldAKSClusterSubscriptionID,
+		FieldClusterCredentialsId,
 	) {
 		log.Printf("[INFO] Nothing to update in cluster setttings.")
 		return nil
@@ -213,14 +221,5 @@ func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, cl
 
 	req.Credentials = &credentials
 
-	// Retries are required for newly created IAM resources to initialise on Azure side.
-	b := backoff.WithContext(backoff.WithMaxRetries(backoff.NewConstantBackOff(10*time.Second), 30), ctx)
-	if err = backoff.Retry(func() error {
-		response, err := client.ExternalClusterAPIUpdateClusterWithResponse(ctx, data.Id(), req)
-		return sdk.CheckOKResponse(response, err)
-	}, b); err != nil {
-		return fmt.Errorf("updating cluster configuration: %w", err)
-	}
-
-	return nil
+	return resourceCastaiClusterUpdate(ctx, client, data, &req)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -19,7 +20,9 @@ import (
 
 const (
 	FieldNodeTemplateArchitectures                            = "architectures"
+	FieldNodeTemplateAZs                                      = "azs"
 	FieldNodeTemplateComputeOptimized                         = "compute_optimized"
+	FieldNodeTemplateComputeOptimizedState                    = "compute_optimized_state"
 	FieldNodeTemplateConfigurationId                          = "configuration_id"
 	FieldNodeTemplateConstraints                              = "constraints"
 	FieldNodeTemplateCustomInstancesEnabled                   = "custom_instances_enabled"
@@ -54,11 +57,20 @@ const (
 	FieldNodeTemplateSpotInterruptionPredictionsEnabled       = "spot_interruption_predictions_enabled"
 	FieldNodeTemplateSpotInterruptionPredictionsType          = "spot_interruption_predictions_type"
 	FieldNodeTemplateStorageOptimized                         = "storage_optimized"
+	FieldNodeTemplateStorageOptimizedState                    = "storage_optimized_state"
 	FieldNodeTemplateUseSpotFallbacks                         = "use_spot_fallbacks"
 	FieldNodeTemplateCustomPriority                           = "custom_priority"
-	FieldNodeTemplateNodeAffinity                             = "node_affinity"
+	FieldNodeTemplateDedicatedNodeAffinity                    = "dedicated_node_affinity"
 	FieldNodeTemplateAzName                                   = "az_name"
 	FieldNodeTemplateInstanceTypes                            = "instance_types"
+	FieldNodeTemplateAffinityName                             = "affinity"
+	FieldNodeTemplateAffinityKeyName                          = "key"
+	FieldNodeTemplateAffinityOperatorName                     = "operator"
+	FieldNodeTemplateAffinityValuesName                       = "values"
+	FieldNodeTemplateBurstableInstances                       = "burstable_instances"
+	FieldNodeTemplateCustomerSpecific                         = "customer_specific"
+	FieldNodeTemplateCPUManufacturers                         = "cpu_manufacturers"
+	FieldNodeTemplateArchitecturePriority                     = "architecture_priority"
 )
 
 const (
@@ -73,9 +85,40 @@ const (
 	OsWindows = "windows"
 )
 
+const (
+	NodeSelectorOperationIn      = "In"
+	NodeSelectorOperationNotIn   = "NotIn"
+	NodeSelectorOperationExists  = "Exists"
+	NodeSelectorOperationDoesNot = "DoesNotExist"
+	NodeSelectorOperationGt      = "Gt"
+	NodeSelectorOperationLt      = "Lt"
+)
+
+type nodeSelectorOperatorsSlice []string
+
+var nodeSelectorOperators = nodeSelectorOperatorsSlice{NodeSelectorOperationIn,
+	NodeSelectorOperationNotIn,
+	NodeSelectorOperationExists,
+	NodeSelectorOperationDoesNot,
+	NodeSelectorOperationGt,
+	NodeSelectorOperationLt,
+}
+
+// Get returns the provider-specific representation of a given K8s selector
+func (m nodeSelectorOperatorsSlice) Get(k sdk.K8sSelectorV1Operator) (string, bool) {
+	for _, v := range m {
+		if strings.EqualFold(string(k), v) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
 func resourceNodeTemplate() *schema.Resource {
 	supportedArchitectures := []string{ArchAMD64, ArchARM64}
 	supportedOs := []string{OsLinux, OsWindows}
+	supportedSelectorOperations := nodeSelectorOperators
+	supportedCPUManufacturers := []string{string(sdk.AMD), string(sdk.AMPERE), string(sdk.APPLE), string(sdk.AWS), string(sdk.INTEL)}
 
 	return &schema.Resource{
 		CreateContext: resourceNodeTemplateCreate,
@@ -137,6 +180,14 @@ func resourceNodeTemplate() *schema.Resource {
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
+						FieldNodeTemplateAZs: {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+							Description: "The list of AZ names to consider for the node template, if empty or not set all AZs are considered.",
+						},
 						FieldNodeTemplateSpot: {
 							Type:        schema.TypeBool,
 							Default:     false,
@@ -208,7 +259,24 @@ func resourceNodeTemplate() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     false,
-							Description: "Storage optimized instance constraint - will only pick storage optimized nodes if true",
+							Description: "Storage optimized instance constraint (deprecated).",
+							ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
+								return diag.Diagnostics{
+									{
+										Severity:      diag.Error,
+										Summary:       "Deprecated field `storage_optimized`",
+										Detail:        "Please use `storage_optimized_state` instead, supported values: `enabled`, `disabled` or empty string. See: https://github.com/castai/terraform-provider-castai#migrating-from-6xx-to-7xx",
+										AttributePath: path,
+									},
+								}
+							},
+						},
+						FieldNodeTemplateStorageOptimizedState: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "",
+							Description:      "Storage optimized instance constraint - will only pick storage optimized nodes if enabled and won't pick if disabled. Empty value will have no effect. Supported values: `enabled`, `disabled` or empty string.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"", Enabled, Disabled}, false)),
 						},
 						FieldNodeTemplateIsGpuOnly: {
 							Type:        schema.TypeBool,
@@ -220,7 +288,24 @@ func resourceNodeTemplate() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     false,
-							Description: "Compute optimized instance constraint - will only pick compute optimized nodes if true.",
+							Description: "Compute optimized instance constraint (deprecated).",
+							ValidateDiagFunc: func(i interface{}, path cty.Path) diag.Diagnostics {
+								return diag.Diagnostics{
+									{
+										Severity:      diag.Error,
+										Summary:       "Deprecated field `compute_optimized`",
+										Detail:        "Please use `compute_optimized_state` instead, supported values: `enabled`, `disabled` or empty string. See: https://github.com/castai/terraform-provider-castai#migrating-from-6xx-to-7xx",
+										AttributePath: path,
+									},
+								}
+							},
+						},
+						FieldNodeTemplateComputeOptimizedState: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "",
+							Description:      "Will only include compute optimized nodes when enabled and exclude compute optimized nodes when disabled. Empty value won't have effect on instances filter. Supported values: `enabled`, `disabled` or empty string.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"", Enabled, Disabled}, false)),
 						},
 						FieldNodeTemplateInstanceFamilies: {
 							Type:     schema.TypeList,
@@ -348,9 +433,10 @@ func resourceNodeTemplate() *schema.Resource {
 								},
 							},
 						},
-						FieldNodeTemplateNodeAffinity: {
-							Type:     schema.TypeList,
-							Optional: true,
+						FieldNodeTemplateDedicatedNodeAffinity: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "Dedicated node affinity - creates preference for instances to be created on sole tenancy or dedicated nodes. This\n feature is only available for GCP clusters and sole tenancy nodes with local\n SSDs or GPUs are not supported. If the sole tenancy or dedicated nodes don't have capacity for selected instance\n type, the Autoscaler will fall back to multi-tenant instance types available for this Node Template.\n Other instance constraints are applied when the Autoscaler picks available instance types that can be created on\n the sole tenancy or dedicated node (example: setting min CPU to 16).",
 							Elem: &schema.Resource{
 								Schema: map[string]*schema.Schema{
 									FieldNodeTemplateInstanceTypes: {
@@ -359,7 +445,7 @@ func resourceNodeTemplate() *schema.Resource {
 										Elem: &schema.Schema{
 											Type: schema.TypeString,
 										},
-										Description: "Instance types in this node group.",
+										Description: "Instance/node types in this node group.",
 									},
 									FieldNodeTemplateAzName: {
 										Required:    true,
@@ -371,8 +457,74 @@ func resourceNodeTemplate() *schema.Resource {
 										Type:        schema.TypeString,
 										Description: "Name of node group.",
 									},
+									FieldNodeTemplateAffinityName: {
+										Optional: true,
+										Type:     schema.TypeList,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												FieldNodeTemplateAffinityKeyName: {
+													Required:    true,
+													Type:        schema.TypeString,
+													Description: "Key of the node affinity selector.",
+												},
+												FieldNodeTemplateAffinityOperatorName: {
+													Required:         true,
+													Type:             schema.TypeString,
+													ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice(supportedSelectorOperations, false)),
+													Description:      fmt.Sprintf("Operator of the node affinity selector. Allowed values: %s.", strings.Join(supportedSelectorOperations, ", ")),
+												},
+												FieldNodeTemplateAffinityValuesName: {
+													Required: true,
+													Type:     schema.TypeList,
+													Elem: &schema.Schema{
+														Type: schema.TypeString,
+													},
+													Description: "Values of the node affinity selector.",
+												},
+											},
+										},
+									},
 								},
 							},
+						},
+						FieldNodeTemplateBurstableInstances: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "",
+							Description:      "Will include burstable instances when enabled otherwise they will be excluded. Supported values: `enabled`, `disabled` or ``.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"", Enabled, Disabled}, false)),
+						},
+						FieldNodeTemplateCustomerSpecific: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "",
+							Description:      "Will include customer specific (preview) instances when enabled otherwise they will be excluded. Supported values: `enabled`, `disabled` or ``.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"", Enabled, Disabled}, false)),
+						},
+						FieldNodeTemplateCPUManufacturers: {
+							Type:     schema.TypeList,
+							MinItems: 1,
+							Optional: true,
+							Elem: &schema.Schema{
+								Type:             schema.TypeString,
+								ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice(supportedCPUManufacturers, false)),
+							},
+							Description: fmt.Sprintf("List of acceptable CPU manufacturers. Allowed values: %s.", strings.Join(supportedCPUManufacturers, ", ")),
+						},
+						FieldNodeTemplateArchitecturePriority: {
+							Type:     schema.TypeList,
+							MaxItems: 2,
+							MinItems: 0,
+							Optional: true,
+							Computed: true,
+							Elem: &schema.Schema{
+								Type:             schema.TypeString,
+								ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice(supportedArchitectures, false)),
+							},
+							DefaultFunc: func() (interface{}, error) {
+								return []string{}, nil
+							},
+							Description: fmt.Sprintf("Priority ordering of architectures, specifying no priority will pick cheapest. Allowed values: %s.", strings.Join(supportedArchitectures, ", ")),
 						},
 					},
 				},
@@ -518,17 +670,29 @@ func flattenConstraints(c *sdk.NodetemplatesV1TemplateConstraints) ([]map[string
 	if c.CustomPriority != nil && len(*c.CustomPriority) > 0 {
 		out[FieldNodeTemplateCustomPriority] = flattenCustomPriority(*c.CustomPriority)
 	}
-	if c.NodeAffinity != nil && len(*c.NodeAffinity) > 0 {
-		out[FieldNodeTemplateNodeAffinity] = flattenNodeAffinity(*c.NodeAffinity)
+	if c.DedicatedNodeAffinity != nil && len(*c.DedicatedNodeAffinity) > 0 {
+		flatNodeAffinity, err := flattenNodeAffinity(*c.DedicatedNodeAffinity)
+		if err != nil {
+			return []map[string]any{}, err
+		}
+		out[FieldNodeTemplateDedicatedNodeAffinity] = flatNodeAffinity
 	}
 	if c.InstanceFamilies != nil {
 		out[FieldNodeTemplateInstanceFamilies] = flattenInstanceFamilies(c.InstanceFamilies)
 	}
 	if c.ComputeOptimized != nil {
-		out[FieldNodeTemplateComputeOptimized] = c.ComputeOptimized
+		if lo.FromPtr(c.ComputeOptimized) {
+			out[FieldNodeTemplateComputeOptimizedState] = Enabled
+		} else {
+			out[FieldNodeTemplateComputeOptimizedState] = Disabled
+		}
 	}
 	if c.StorageOptimized != nil {
-		out[FieldNodeTemplateStorageOptimized] = c.StorageOptimized
+		if lo.FromPtr(c.StorageOptimized) {
+			out[FieldNodeTemplateStorageOptimizedState] = Enabled
+		} else {
+			out[FieldNodeTemplateStorageOptimizedState] = Disabled
+		}
 	}
 	if c.Spot != nil {
 		out[FieldNodeTemplateSpot] = c.Spot
@@ -575,7 +739,30 @@ func flattenConstraints(c *sdk.NodetemplatesV1TemplateConstraints) ([]map[string
 	if c.Os != nil {
 		out[FieldNodeTemplateOs] = lo.FromPtr(c.Os)
 	}
+	if c.Azs != nil {
+		out[FieldNodeTemplateAZs] = lo.FromPtr(c.Azs)
+	}
+	if c.CpuManufacturers != nil {
+		out[FieldNodeTemplateCPUManufacturers] = lo.FromPtr(c.CpuManufacturers)
+	}
+	if c.ArchitecturePriority != nil {
+		out[FieldNodeTemplateArchitecturePriority] = lo.FromPtr(c.ArchitecturePriority)
+	}
+	setStateConstraintValue(c.Burstable, FieldNodeTemplateBurstableInstances, out)
+	setStateConstraintValue(c.CustomerSpecific, FieldNodeTemplateCustomerSpecific, out)
 	return []map[string]any{out}, nil
+}
+
+func setStateConstraintValue(value *sdk.NodetemplatesV1TemplateConstraintsConstraintState, key string, values map[string]any) map[string]any {
+	if value != nil {
+		switch lo.FromPtr(value) {
+		case sdk.ENABLED:
+			values[key] = Enabled
+		case sdk.DISABLED:
+			values[key] = Disabled
+		}
+	}
+	return values
 }
 
 func flattenInstanceFamilies(families *sdk.NodetemplatesV1TemplateConstraintsInstanceFamilyConstraints) []map[string][]string {
@@ -628,8 +815,9 @@ func flattenCustomPriority(priorities []sdk.NodetemplatesV1TemplateConstraintsCu
 	})
 }
 
-func flattenNodeAffinity(affinities []sdk.NodetemplatesV1TemplateConstraintsNodeAffinity) any {
-	return lo.Map(affinities, func(item sdk.NodetemplatesV1TemplateConstraintsNodeAffinity, index int) map[string]any {
+func flattenNodeAffinity(affinities []sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity) (any, error) {
+	var err error
+	return lo.Map(affinities, func(item sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity, index int) map[string]any {
 		result := map[string]any{}
 		if item.InstanceTypes != nil {
 			result[FieldNodeTemplateInstanceTypes] = *item.InstanceTypes
@@ -637,8 +825,24 @@ func flattenNodeAffinity(affinities []sdk.NodetemplatesV1TemplateConstraintsNode
 
 		result[FieldNodeTemplateName] = lo.FromPtr(item.Name)
 		result[FieldNodeTemplateAzName] = lo.FromPtr(item.AzName)
+
+		if item.Affinity != nil && len(*item.Affinity) > 0 {
+
+			result[FieldNodeTemplateAffinityName] = lo.Map(*item.Affinity, func(affinity sdk.K8sSelectorV1KubernetesNodeAffinity, index int) map[string]any {
+				affinityOperator, ok := nodeSelectorOperators.Get(affinity.Operator)
+				if !ok {
+					err = fmt.Errorf("found unknown node selector operator: %q", affinity.Operator)
+				}
+				return map[string]any{
+					FieldNodeTemplateAffinityKeyName:      affinity.Key,
+					FieldNodeTemplateAffinityOperatorName: affinityOperator,
+					FieldNodeTemplateAffinityValuesName:   affinity.Values,
+				}
+			})
+		}
+
 		return result
-	})
+	}), err
 }
 
 func resourceNodeTemplateDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -765,14 +969,19 @@ func resourceNodeTemplateCreate(ctx context.Context, d *schema.ResourceData, met
 	client := meta.(*ProviderConfig).api
 	clusterID := d.Get(FieldClusterID).(string)
 
-	// default node template is created by default in the background, therefore we need to use PUT instead of POST
-	if d.Get(FieldNodeTemplateIsDefault).(bool) {
+	name := d.Get(FieldNodeTemplateName).(string)
+	isDefault := d.Get(FieldNodeTemplateIsDefault).(bool)
+
+	// When creating a default node template, use PUT instead of POST because a default node template is automatically created in the background.
+	// Since name of the default node template is fixed, we can use it to identify the default node template. All other
+	// requests should be treated as regular node template creation requests to avoid conflicts for validation of the request.
+	if isDefault && name == "default-by-castai" {
 		return updateDefaultNodeTemplate(ctx, d, meta)
 	}
 
 	req := sdk.NodeTemplatesAPICreateNodeTemplateJSONRequestBody{
-		Name:            lo.ToPtr(d.Get(FieldNodeTemplateName).(string)),
-		IsDefault:       lo.ToPtr(d.Get(FieldNodeTemplateIsDefault).(bool)),
+		Name:            lo.ToPtr(name),
+		IsDefault:       lo.ToPtr(isDefault),
 		ConfigurationId: lo.ToPtr(d.Get(FieldNodeTemplateConfigurationId).(string)),
 		ShouldTaint:     lo.ToPtr(d.Get(FieldNodeTemplateShouldTaint).(bool)),
 	}
@@ -839,9 +1048,9 @@ func updateDefaultNodeTemplate(ctx context.Context, d *schema.ResourceData, meta
 		for _, d := range diagnostics {
 			if d.Severity == diag.Error {
 				if strings.Contains(d.Summary, "node template not found") {
-					return retry.RetryableError(fmt.Errorf(d.Summary))
+					return retry.RetryableError(fmt.Errorf("%s", d.Summary))
 				}
-				return retry.NonRetryableError(fmt.Errorf(d.Summary))
+				return retry.NonRetryableError(fmt.Errorf("%s", d.Summary))
 			}
 		}
 		return nil
@@ -982,8 +1191,15 @@ func toTemplateConstraints(obj map[string]any) *sdk.NodetemplatesV1TemplateConst
 	}
 
 	out := &sdk.NodetemplatesV1TemplateConstraints{}
-	if v, ok := obj[FieldNodeTemplateComputeOptimized].(bool); ok {
-		out.ComputeOptimized = toPtr(v)
+	if v, ok := obj[FieldNodeTemplateComputeOptimizedState].(string); ok {
+		switch v {
+		case Enabled:
+			out.ComputeOptimized = toPtr(true)
+		case Disabled:
+			out.ComputeOptimized = toPtr(false)
+		default:
+			out.ComputeOptimized = nil
+		}
 	}
 	if v, ok := obj[FieldNodeTemplateFallbackRestoreRateSeconds].(int); ok {
 		out.FallbackRestoreRateSeconds = toPtr(int32(v))
@@ -1022,8 +1238,15 @@ func toTemplateConstraints(obj map[string]any) *sdk.NodetemplatesV1TemplateConst
 			out.Spot = toPtr(!v)
 		}
 	}
-	if v, ok := obj[FieldNodeTemplateStorageOptimized].(bool); ok {
-		out.StorageOptimized = toPtr(v)
+	if v, ok := obj[FieldNodeTemplateStorageOptimizedState].(string); ok {
+		switch v {
+		case Enabled:
+			out.StorageOptimized = toPtr(true)
+		case Disabled:
+			out.StorageOptimized = toPtr(false)
+		default:
+			out.StorageOptimized = nil
+		}
 	}
 	if v, ok := obj[FieldNodeTemplateUseSpotFallbacks].(bool); ok {
 		out.UseSpotFallbacks = toPtr(v)
@@ -1033,6 +1256,9 @@ func toTemplateConstraints(obj map[string]any) *sdk.NodetemplatesV1TemplateConst
 	}
 	if v, ok := obj[FieldNodeTemplateOs].([]any); ok {
 		out.Os = toPtr(toStringList(v))
+	}
+	if v, ok := obj[FieldNodeTemplateAZs].([]any); ok {
+		out.Azs = toPtr(toStringList(v))
 	}
 	if v, ok := obj[FieldNodeTemplateIsGpuOnly].(bool); ok {
 		out.IsGpuOnly = toPtr(v)
@@ -1064,20 +1290,47 @@ func toTemplateConstraints(obj map[string]any) *sdk.NodetemplatesV1TemplateConst
 			}))
 		}
 	}
-	if v, ok := obj[FieldNodeTemplateNodeAffinity].([]any); ok && len(v) > 0 {
+	if v, ok := obj[FieldNodeTemplateDedicatedNodeAffinity].([]any); ok && len(v) > 0 {
 		if ok {
-			out.NodeAffinity = lo.ToPtr(lo.FilterMap(v, func(item any, _ int) (sdk.NodetemplatesV1TemplateConstraintsNodeAffinity, bool) {
+			out.DedicatedNodeAffinity = lo.ToPtr(lo.FilterMap(v, func(item any, _ int) (sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity, bool) {
 				val, ok := item.(map[string]any)
 				if !ok {
-					return sdk.NodetemplatesV1TemplateConstraintsNodeAffinity{}, false
+					return sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity{}, false
 				}
 				res := toTemplateConstraintsNodeAffinity(val)
 				if res == nil {
-					return sdk.NodetemplatesV1TemplateConstraintsNodeAffinity{}, false
+					return sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity{}, false
 				}
 				return *res, true
 			}))
 		}
+	}
+	if v, ok := obj[FieldNodeTemplateBurstableInstances].(string); ok {
+		switch v {
+		case Enabled:
+			out.Burstable = toPtr(sdk.ENABLED)
+		case Disabled:
+			out.Burstable = toPtr(sdk.DISABLED)
+		}
+	}
+
+	if v, ok := obj[FieldNodeTemplateCustomerSpecific].(string); ok {
+		switch v {
+		case Enabled:
+			out.CustomerSpecific = toPtr(sdk.ENABLED)
+		case Disabled:
+			out.CustomerSpecific = toPtr(sdk.DISABLED)
+		}
+	}
+
+	if v, ok := obj[FieldNodeTemplateCPUManufacturers].([]any); ok {
+		out.CpuManufacturers = toPtr(lo.Map(v, func(item any, _ int) sdk.NodetemplatesV1TemplateConstraintsCPUManufacturer {
+			return sdk.NodetemplatesV1TemplateConstraintsCPUManufacturer(item.(string))
+		}))
+	}
+
+	if v, ok := obj[FieldNodeTemplateArchitecturePriority].([]any); ok {
+		out.ArchitecturePriority = toPtr(toStringList(v))
 	}
 
 	return out
@@ -1144,12 +1397,12 @@ func toTemplateConstraintsCustomPriority(o map[string]any) *sdk.NodetemplatesV1T
 	return &out
 }
 
-func toTemplateConstraintsNodeAffinity(o map[string]any) *sdk.NodetemplatesV1TemplateConstraintsNodeAffinity {
+func toTemplateConstraintsNodeAffinity(o map[string]any) *sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity {
 	if o == nil {
 		return nil
 	}
 
-	out := sdk.NodetemplatesV1TemplateConstraintsNodeAffinity{}
+	out := sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity{}
 	if v, ok := o[FieldNodeTemplateName].(string); ok {
 		out.Name = toPtr(v)
 	}
@@ -1158,6 +1411,25 @@ func toTemplateConstraintsNodeAffinity(o map[string]any) *sdk.NodetemplatesV1Tem
 	}
 	if v, ok := o[FieldNodeTemplateInstanceTypes].([]any); ok {
 		out.InstanceTypes = toPtr(toStringList(v))
+	}
+	if v, ok := o[FieldNodeTemplateAffinityName].([]any); ok {
+		out.Affinity = toPtr(lo.Map(v, func(item any, _ int) sdk.K8sSelectorV1KubernetesNodeAffinity {
+			val, ok := item.(map[string]any)
+			if !ok {
+				return sdk.K8sSelectorV1KubernetesNodeAffinity{}
+			}
+			out := sdk.K8sSelectorV1KubernetesNodeAffinity{}
+			if v, ok := val[FieldNodeTemplateAffinityKeyName].(string); ok {
+				out.Key = v
+			}
+			if v, ok := val[FieldNodeTemplateAffinityOperatorName].(string); ok {
+				out.Operator = sdk.K8sSelectorV1Operator(v)
+			}
+			if v, ok := val[FieldNodeTemplateAffinityValuesName].([]any); ok {
+				out.Values = toStringList(v)
+			}
+			return out
+		}))
 	}
 
 	return &out

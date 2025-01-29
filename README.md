@@ -327,13 +327,136 @@ module "castai-aks-cluster" {
   }
 }
 ```
-
 For more information for `castai-aks-cluster` module follow:
 https://github.com/castai/terraform-castai-aks/blob/main/README.md#migrating-from-2xx-to-3xx
 If you have used `castai-eks-cluster` or other modules follow:
 https://github.com/castai/terraform-castai-eks-cluster/blob/main/README.md#migrating-from-6xx-to-7xx
 If you have used `castai-gke-cluster` or other modules follow:
 https://github.com/castai/terraform-castai-gke-cluster/blob/main/README.md#migrating-from-3xx-to-4xx
+
+
+Migrating from 6.x.x to 7.x.x
+---------------------------
+
+Version 7.x.x changed:
+* Removed `compute_optimized` and `storage_optimized` attributes in `castai_node_template` resource, `constraints` object. Use `compute_optimized_state` and `storage_optimized_state` instead.
+
+Old configuration:
+```terraform
+module "castai-aks-cluster" {
+  node_templates = {
+    spot_tmpl = {
+      constraints = {
+        compute_optimized = false
+        storage_optimized = true
+      }
+    }
+  }
+}
+```
+
+New configuration:
+```terraform
+module "castai-aks-cluster" {
+  node_templates = {
+    spot_tmpl = {
+      constraints = {
+        compute_optimized_state = "disabled"
+        storage_optimized_state = "enabled"
+      }
+    }
+  }
+}
+```
+
+* [v7.4.X] Deprecated `autoscaler_policies_json` attribute in `castai_autoscaler` resource. Use `autoscaler_settings` instead.
+
+Old configuration:
+```hcl
+resource "castai_autoscaler" "castai_autoscaler_policies" {
+  cluster_id               = data.castai_eks_clusterid.cluster_id.id // or other reference
+  
+  autoscaler_policies_json = <<-EOT
+     {
+        "enabled": true,
+        "unschedulablePods": {
+            "enabled": true
+        },
+        "nodeDownscaler": {
+            "enabled": true,
+            "emptyNodes": {
+                "enabled": true
+            },
+            "evictor": {
+                "aggressiveMode": false,
+                "cycleInterval": "5m10s",
+                "dryRun": false,
+                "enabled": true,
+                "nodeGracePeriodMinutes": 10,
+                "scopedMode": false
+            }
+        },
+        "nodeTemplatesPartialMatchingEnabled": false,
+        "clusterLimits": {
+            "cpu": {
+                "maxCores": 20,
+                "minCores": 1
+            },
+            "enabled": true
+        }
+    }
+  EOT
+}
+```
+
+New configuration:
+```hcl
+resource "castai_autoscaler" "castai_autoscaler_policies" {
+  cluster_id               = data.castai_eks_clusterid.cluster_id.id // or other reference
+
+  autoscaler_settings {
+    enabled = true
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods {
+      enabled = true
+    }
+
+    node_downscaler {
+      enabled = true
+
+      empty_nodes {
+        enabled = false
+      }
+
+      evictor {
+        aggressive_mode           = false
+        cycle_interval            = "5m10s"
+        dry_run                   = false
+        enabled                   = true
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits {
+      enabled = true
+      
+      cpu {
+        max_cores = 20
+        min_cores = 1
+      }
+    }
+  }
+}
+```
+
+For more information for `castai-aks-cluster` module follow:
+https://github.com/castai/terraform-castai-aks/blob/main/README.md#migrating-from-3xx-to-4xx
+If you have used `castai-eks-cluster` or other modules follow:
+https://github.com/castai/terraform-castai-eks-cluster/blob/main/README.md#migrating-from-7xx-to-8xx
+If you have used `castai-gke-cluster` or other modules follow:
+https://github.com/castai/terraform-castai-gke-cluster/blob/main/README.md#migrating-from-4xx-to-5xx
 
 
 Developing the provider
@@ -348,6 +471,16 @@ To build the provider locally:
 $ git clone https://github.com/CastAI/terraform-provider-castai.git
 $ cd terraform-provider-castai
 $ make build
+```
+
+After you build the provider, you have to set the `~/.terraformrc` configuration to let terraform know you want to use local provider:
+```terraform
+provider_installation {
+  dev_overrides {
+    "castai/castai" = "<path-to-terraform-provider-castai-repository>"
+  }
+  direct {}
+}
 ```
 
 _`make build` builds the provider and install symlinks to that build for all terraform projects in `examples/*` dir.

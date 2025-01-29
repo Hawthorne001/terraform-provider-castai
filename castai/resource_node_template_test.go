@@ -56,7 +56,7 @@ func TestNodeTemplateResourceReadContext(t *testing.T) {
 				  "spotDiversityPriceIncreaseLimitPercent": 20,
 				  "spotInterruptionPredictionsEnabled": true,
 				  "spotInterruptionPredictionsType": "aws-rebalance-recommendations",
-				  "storageOptimized": false,
+				  "storageOptimized": true,
 				  "computeOptimized": false,
 				  "minCpu": 10,
 				  "maxCpu": 10000,
@@ -74,6 +74,7 @@ func TestNodeTemplateResourceReadContext(t *testing.T) {
 				  },
 	              "architectures": ["amd64", "arm64"],
 				  "os": ["linux"],
+				  "azs": ["us-west-2a", "us-west-2b", "us-west-2c"],
 				  "gpu": {
 					"manufacturers": [
 					  "NVIDIA"
@@ -88,13 +89,22 @@ func TestNodeTemplateResourceReadContext(t *testing.T) {
 				  		"onDemand": true
 				  	}
 				  ],
-				  "nodeAffinity": [
+				  "dedicatedNodeAffinity": [
 				    {	
 						"name": "foo",
 						"azName": "eu-central-1a",
-						"instanceTypes": ["m5.24xlarge"]
+						"instanceTypes": ["m5.24xlarge"],
+						"affinity": [
+                          {
+							"key": "gke.io/gcp-nodepool",
+							"operator": "In",	
+							"values": ["foo"]
+						  }
+						]
 					}
-				  ]
+				  ],
+				  "cpuManufacturers": ["INTEL", "AMD"],
+	              "architecturePriority": ["amd64", "arm64"]
 				},
 				"version": "3",
 				"shouldTaint": true,
@@ -144,10 +154,21 @@ func TestNodeTemplateResourceReadContext(t *testing.T) {
 cluster_id = b6bfc074-a267-400f-b8f1-db0850c369b1
 configuration_id = 7dc4f922-29c9-4377-889c-0c8c5fb8d497
 constraints.# = 1
+constraints.0.architecture_priority.# = 2
+constraints.0.architecture_priority.0 = amd64
+constraints.0.architecture_priority.1 = arm64
 constraints.0.architectures.# = 2
 constraints.0.architectures.0 = amd64
 constraints.0.architectures.1 = arm64
+constraints.0.azs.# = 3
+constraints.0.azs.0 = us-west-2a
+constraints.0.azs.1 = us-west-2b
+constraints.0.azs.2 = us-west-2c
 constraints.0.compute_optimized = false
+constraints.0.compute_optimized_state = disabled
+constraints.0.cpu_manufacturers.# = 2
+constraints.0.cpu_manufacturers.0 = INTEL
+constraints.0.cpu_manufacturers.1 = AMD
 constraints.0.custom_priority.# = 1
 constraints.0.custom_priority.0.instance_families.# = 2
 constraints.0.custom_priority.0.instance_families.0 = a
@@ -163,6 +184,8 @@ constraints.0.gpu.0.manufacturers.# = 1
 constraints.0.gpu.0.manufacturers.0 = NVIDIA
 constraints.0.gpu.0.max_count = 0
 constraints.0.gpu.0.min_count = 0
+constraints.0.burstable_instances = 
+constraints.0.customer_specific = 
 constraints.0.instance_families.# = 1
 constraints.0.instance_families.0.exclude.# = 7
 constraints.0.instance_families.0.exclude.0 = p4d
@@ -178,11 +201,16 @@ constraints.0.max_cpu = 10000
 constraints.0.max_memory = 0
 constraints.0.min_cpu = 10
 constraints.0.min_memory = 0
-constraints.0.node_affinity.# = 1
-constraints.0.node_affinity.0.az_name = eu-central-1a
-constraints.0.node_affinity.0.instance_types.# = 1
-constraints.0.node_affinity.0.instance_types.0 = m5.24xlarge
-constraints.0.node_affinity.0.name = foo
+constraints.0.dedicated_node_affinity.# = 1
+constraints.0.dedicated_node_affinity.0.affinity.# = 1
+constraints.0.dedicated_node_affinity.0.affinity.0.key = gke.io/gcp-nodepool
+constraints.0.dedicated_node_affinity.0.affinity.0.operator = In
+constraints.0.dedicated_node_affinity.0.affinity.0.values.# = 1
+constraints.0.dedicated_node_affinity.0.affinity.0.values.0 = foo
+constraints.0.dedicated_node_affinity.0.az_name = eu-central-1a
+constraints.0.dedicated_node_affinity.0.instance_types.# = 1
+constraints.0.dedicated_node_affinity.0.instance_types.0 = m5.24xlarge
+constraints.0.dedicated_node_affinity.0.name = foo
 constraints.0.on_demand = true
 constraints.0.os.# = 1
 constraints.0.os.0 = linux
@@ -191,6 +219,7 @@ constraints.0.spot_diversity_price_increase_limit_percent = 20
 constraints.0.spot_interruption_predictions_enabled = true
 constraints.0.spot_interruption_predictions_type = aws-rebalance-recommendations
 constraints.0.storage_optimized = false
+constraints.0.storage_optimized_state = enabled
 constraints.0.use_spot_fallbacks = false
 custom_instances_enabled = true
 custom_instances_with_extended_memory_enabled = true
@@ -213,6 +242,89 @@ Tainted = false
 `, "\n"),
 		strings.Split(data.State().String(), "\n"),
 	)
+}
+
+func Test_flattenNodeAffinity(t *testing.T) {
+	makeSDKNodeAffinityWithOperator := func(op string) []sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity {
+		return []sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity{
+			{
+				Affinity: &[]sdk.K8sSelectorV1KubernetesNodeAffinity{{
+					Key:      "kubernetes.io/os",
+					Operator: sdk.K8sSelectorV1Operator(op),
+					Values:   []string{"linux"},
+				}},
+				AzName:        lo.ToPtr("us-central1-c"),
+				InstanceTypes: &[]string{"e2"},
+				Name:          lo.ToPtr("linux-only"),
+			},
+		}
+	}
+
+	makeMappedNodeAffinityWithOperator := func(op string) []map[string]any {
+		wantNA := []map[string]any{
+			{
+				FieldNodeTemplateInstanceTypes: []string{"e2"},
+				FieldNodeTemplateAzName:        "us-central1-c",
+				FieldNodeTemplateName:          "linux-only",
+				FieldNodeTemplateAffinityName: []map[string]any{
+					{
+						FieldNodeTemplateAffinityKeyName:      "kubernetes.io/os",
+						FieldNodeTemplateAffinityOperatorName: op,
+						FieldNodeTemplateAffinityValuesName:   []string{"linux"},
+					},
+				},
+			},
+		}
+		return wantNA
+	}
+
+	tt := []struct {
+		name              string
+		inputNodeAffinity []sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity
+		wantNodeAffinity  []map[string]any
+		wantErr           bool
+	}{
+		{
+			name:              "should produce an error for an unknown operator",
+			inputNodeAffinity: makeSDKNodeAffinityWithOperator("UNKNOWN"),
+			wantNodeAffinity:  makeMappedNodeAffinityWithOperator(""),
+			wantErr:           true,
+		},
+	}
+
+	for _, canonical := range nodeSelectorOperators {
+		testedVariants := []string{canonical, strings.ToLower(canonical), strings.ToUpper(canonical)}
+		for _, variant := range testedVariants {
+			tcName := fmt.Sprintf("should map %q to %q", variant, canonical)
+			input := makeSDKNodeAffinityWithOperator(variant)
+			want := makeMappedNodeAffinityWithOperator(canonical)
+
+			tc := struct {
+				name              string
+				inputNodeAffinity []sdk.NodetemplatesV1TemplateConstraintsDedicatedNodeAffinity
+				wantNodeAffinity  []map[string]any
+				wantErr           bool
+			}{
+				name:              tcName,
+				inputNodeAffinity: input,
+				wantNodeAffinity:  want,
+				wantErr:           false,
+			}
+
+			tt = append(tt, tc)
+		}
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.name, func(t *testing.T) {
+			r := require.New(t)
+			got, err := flattenNodeAffinity(tc.inputNodeAffinity)
+			r.Equal(tc.wantNodeAffinity, got)
+			if tc.wantErr {
+				r.Error(err)
+			}
+		})
+	}
 }
 
 func TestNodeTemplateResourceReadContextEmptyList(t *testing.T) {
@@ -433,8 +545,13 @@ func TestAccResourceNodeTemplate_basic(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.on_demand", "false"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.architectures.#", "1"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.architectures.0", "amd64"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.architecture_priority.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.architecture_priority.0", "amd64"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.os.#", "1"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.os.0", "linux"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.#", "2"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.0", "eu-central-1a"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.1", "eu-central-1b"),
 					resource.TestCheckResourceAttr(resourceName, "is_default", "false"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.enable_spot_diversity", "true"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.spot_diversity_price_increase_limit_percent", "21"),
@@ -446,7 +563,12 @@ func TestAccResourceNodeTemplate_basic(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.0.instance_families.1", "d"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.0.spot", "true"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.0.on_demand", "true"),
-					resource.TestCheckResourceAttr(resourceName, "constraints.0.node_affinity.#", "0"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.dedicated_node_affinity.#", "0"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.storage_optimized_state", "disabled"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.compute_optimized_state", ""),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.#", "2"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.0", "INTEL"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.1", "AMD"),
 				),
 			},
 			{
@@ -486,8 +608,14 @@ func TestAccResourceNodeTemplate_basic(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.use_spot_fallbacks", "true"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.architectures.#", "1"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.architectures.0", "arm64"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.architecture_priority.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.architecture_priority.0", "arm64"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.os.#", "1"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.os.0", "linux"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.#", "3"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.0", "eu-central-1a"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.1", "eu-central-1b"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.azs.2", "eu-central-1c"),
 					resource.TestCheckResourceAttr(resourceName, "is_default", "false"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.enable_spot_diversity", "true"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.spot_diversity_price_increase_limit_percent", "22"),
@@ -504,7 +632,14 @@ func TestAccResourceNodeTemplate_basic(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.1.instance_families.1", "d"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.1.spot", "true"),
 					resource.TestCheckResourceAttr(resourceName, "constraints.0.custom_priority.1.on_demand", "true"),
-					resource.TestCheckResourceAttr(resourceName, "constraints.0.node_affinity.#", "0"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.dedicated_node_affinity.#", "0"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.storage_optimized_state", "enabled"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.compute_optimized_state", "disabled"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.burstable_instances", "enabled"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.customer_specific", "enabled"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.#", "2"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.0", "INTEL"),
+					resource.TestCheckResourceAttr(resourceName, "constraints.0.cpu_manufacturers.1", "AMD"),
 				),
 			},
 		},
@@ -559,24 +694,29 @@ func testAccNodeTemplateConfig(rName, clusterName string) string {
 				spot_interruption_predictions_enabled = true
 				spot_interruption_predictions_type = "interruption-predictions"
 				use_spot_fallbacks = true
+				storage_optimized_state = "disabled"
+				burstable_instances = "enabled"
+				customer_specific = "enabled"
 				min_cpu = 4
 				max_cpu = 100
 				instance_families {
 				  exclude = ["m5"]
 				}
+				azs = ["eu-central-1a", "eu-central-1b"]
 				gpu {
 					include_names = []
 					exclude_names = []
 					manufacturers = ["NVIDIA"]
-				}	
-				compute_optimized = false
-				storage_optimized = false
+				}
 
 				custom_priority {
 					instance_families = ["c", "d"]
 					spot = true
 					on_demand = true
 				}
+
+				cpu_manufacturers = ["INTEL", "AMD"]
+				architecture_priority = ["amd64"]
 			}
 		}
 	`, rName))
@@ -615,9 +755,12 @@ func testNodeTemplateUpdated(rName, clusterName string) string {
 				spot_interruption_predictions_enabled = true
 				spot_interruption_predictions_type = "interruption-predictions"
 				fallback_restore_rate_seconds = 1800
-				storage_optimized = false
-				compute_optimized = false
+				storage_optimized_state = "enabled"
+				compute_optimized_state = "disabled"
 				architectures = ["arm64"]
+				burstable_instances = "enabled"
+				customer_specific = "enabled"
+				azs = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]
 
 				custom_priority {
 					instance_families = ["a", "b"]
@@ -628,6 +771,9 @@ func testNodeTemplateUpdated(rName, clusterName string) string {
 					spot = true
 					on_demand = true
 				}
+
+				cpu_manufacturers = ["INTEL", "AMD"]
+				architecture_priority = ["arm64"]
 			}
 		}
 	`, rName))
