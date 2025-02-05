@@ -10,33 +10,55 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samber/lo"
-
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/samber/lo"
 
 	"github.com/castai/terraform-provider-castai/castai/sdk"
 	castval "github.com/castai/terraform-provider-castai/castai/validation"
 )
 
 const (
-	FieldNodeConfigurationName             = "name"
-	FieldNodeConfigurationDiskCpuRatio     = "disk_cpu_ratio"
-	FieldNodeConfigurationMinDiskSize      = "min_disk_size"
-	FieldNodeConfigurationSubnets          = "subnets"
-	FieldNodeConfigurationSSHPublicKey     = "ssh_public_key"
-	FieldNodeConfigurationImage            = "image"
-	FieldNodeConfigurationTags             = "tags"
-	FieldNodeConfigurationInitScript       = "init_script"
-	FieldNodeConfigurationContainerRuntime = "container_runtime"
-	FieldNodeConfigurationDockerConfig     = "docker_config"
-	FieldNodeConfigurationKubeletConfig    = "kubelet_config"
-	FieldNodeConfigurationAKS              = "aks"
-	FieldNodeConfigurationEKS              = "eks"
-	FieldNodeConfigurationKOPS             = "kops"
-	FieldNodeConfigurationGKE              = "gke"
+	FieldNodeConfigurationName                    = "name"
+	FieldNodeConfigurationDiskCpuRatio            = "disk_cpu_ratio"
+	FieldNodeConfigurationMinDiskSize             = "min_disk_size"
+	FieldNodeConfigurationDrainTimeoutSec         = "drain_timeout_sec"
+	FieldNodeConfigurationSubnets                 = "subnets"
+	FieldNodeConfigurationSSHPublicKey            = "ssh_public_key"
+	FieldNodeConfigurationImage                   = "image"
+	FieldNodeConfigurationTags                    = "tags"
+	FieldNodeConfigurationInitScript              = "init_script"
+	FieldNodeConfigurationContainerRuntime        = "container_runtime"
+	FieldNodeConfigurationDockerConfig            = "docker_config"
+	FieldNodeConfigurationKubeletConfig           = "kubelet_config"
+	FieldNodeConfigurationAKS                     = "aks"
+	FieldNodeConfigurationEKS                     = "eks"
+	FieldNodeConfigurationKOPS                    = "kops"
+	FieldNodeConfigurationGKE                     = "gke"
+	FieldNodeConfigurationEKSTargetGroup          = "target_group"
+	FieldNodeConfigurationAKSImageFamily          = "aks_image_family"
+	FieldNodeConfigurationAKSEphemeralOSDisk      = "ephemeral_os_disk"
+	FieldNodeConfigurationEKSImageFamily          = "eks_image_family"
+	FieldNodeConfigurationLoadbalancers           = "loadbalancers"
+	FieldNodeConfigurationAKSLoadbalancerIPPools  = "ip_based_backend_pools"
+	FieldNodeConfigurationAKSLoadbalancerNICPools = "nic_based_backend_pools"
+)
+
+const (
+	eksImageFamilyAL2          = "al2"
+	eksImageFamilyAL2023       = "al2023"
+	eksImageFamilyBottlerocket = "bottlerocket"
+)
+
+const (
+	aksImageFamilyUbuntu                  = "ubuntu"
+	aksImageFamilyAzureLinux              = "azure-linux"
+	aksEphemeralDiskPlacementCacheDisk    = "cacheDisk"
+	aksEphemeralDiskPlacementResourceDisk = "resourceDisk"
+	aksDiskCacheReadOnly                  = "ReadOnly"
+	aksDiskCacheReadWrite                 = "ReadWrite"
 )
 
 func resourceNodeConfiguration() *schema.Resource {
@@ -78,12 +100,19 @@ func resourceNodeConfiguration() *schema.Resource {
 				ValidateDiagFunc: validation.ToDiagFunc(validation.IntAtLeast(0)),
 				Description:      "Disk to CPU ratio. Sets the number of GiBs to be added for every CPU on the node. Defaults to 0",
 			},
+			FieldNodeConfigurationDrainTimeoutSec: {
+				Type:             schema.TypeInt,
+				Optional:         true,
+				Default:          0,
+				ValidateDiagFunc: validation.ToDiagFunc(validation.IntBetween(0, 3600)),
+				Description:      "Timeout in seconds for draining the node. Defaults to 0",
+			},
 			FieldNodeConfigurationMinDiskSize: {
 				Type:             schema.TypeInt,
 				Optional:         true,
 				Default:          100,
-				ValidateDiagFunc: validation.ToDiagFunc(validation.IntBetween(30, 1000)),
-				Description:      "Minimal disk size in GiB. Defaults to 100, min 30, max 1000",
+				ValidateDiagFunc: validation.ToDiagFunc(validation.IntBetween(30, 65536)),
+				Description:      "Minimal disk size in GiB. Defaults to 100, min 30, max 65536",
 			},
 			FieldNodeConfigurationSubnets: {
 				Type:     schema.TypeList,
@@ -102,7 +131,7 @@ func resourceNodeConfiguration() *schema.Resource {
 			FieldNodeConfigurationImage: {
 				Type:             schema.TypeString,
 				Optional:         true,
-				Description:      "Image to be used while provisioning the node. If nothing is provided will be resolved to latest available image based on Kubernetes version if possible ",
+				Description:      "Image to be used while provisioning the node. If nothing is provided will be resolved to latest available image based on Image family, Kubernetes version and node architecture if possible. See Cast.ai documentation for details.",
 				ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
 			},
 			FieldNodeConfigurationTags: {
@@ -157,6 +186,13 @@ func resourceNodeConfiguration() *schema.Resource {
 							},
 							Description: "Cluster's security groups configuration for CAST provisioned nodes",
 						},
+						"node_group_arn": {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Description:      "Cluster's node group ARN used for CAST provisioned node pools. Required for hibernate/resume functionality",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
+						},
+
 						"dns_cluster_ip": {
 							Type:             schema.TypeString,
 							Optional:         true,
@@ -178,8 +214,8 @@ func resourceNodeConfiguration() *schema.Resource {
 						"volume_type": {
 							Type:             schema.TypeString,
 							Optional:         true,
-							Description:      "AWS EBS volume type to be used for CAST provisioned nodes. One of: gp3, io1, io2",
-							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"gp3", "io1", "io2"}, true)),
+							Description:      "AWS EBS volume type to be used for CAST provisioned nodes. One of: gp3, gp2, io1, io2",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"gp3", "gp2", "io1", "io2"}, true)),
 						},
 						"volume_iops": {
 							Type:             schema.TypeInt,
@@ -212,6 +248,59 @@ func resourceNodeConfiguration() *schema.Resource {
 							Description:      "AWS KMS key ARN for encrypting EBS volume attached to the node",
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringMatch(regexp.MustCompile(`arn:aws:kms:.*`), "Must be a valid KMS key ARN")),
 						},
+						"max_pods_per_node_formula": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Formula to calculate the maximum number of pods that can be run on a node. The following list of variables will be bound to a number before evaluating and can be used in the formula: NUM_MAX_NET_INTERFACES, NUM_IP_PER_INTERFACE, NUM_IP_PER_PREFIX, NUM_CPU, NUM_RAM_GB .",
+						},
+						"ips_per_prefix": {
+							Type:             schema.TypeInt,
+							Optional:         true,
+							Default:          nil,
+							Description:      "Number of IPs per prefix to be used for calculating max pods.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.IntBetween(0, 256)),
+							DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+								log.Printf("[DEBUG] changing 'ips_per_prefix' attribute for eks: old=%s, new=%s", oldValue, newValue)
+								if oldValue == "1" && newValue == "0" {
+									return true
+								}
+								return oldValue == newValue
+							},
+						},
+						FieldNodeConfigurationEKSImageFamily: {
+							Type:     schema.TypeString,
+							Optional: true,
+							Description: fmt.Sprintf(
+								"Image OS Family to use when provisioning node in EKS. "+
+									"If both image and family are provided, the system will use provided image and provisioning logic for given family. "+
+									"If only image family is provided, the system will attempt to resolve the latest image from that family based on kubernetes version and node architecture. "+
+									"If image family is omitted, a default family (based on cloud provider) will be used. "+
+									"See Cast.ai documentation for details. Possible values: (%v)", strings.Join([]string{eksImageFamilyAL2, eksImageFamilyAL2023, eksImageFamilyBottlerocket}, ",")),
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{eksImageFamilyAL2, eksImageFamilyAL2023, eksImageFamilyBottlerocket}, true)),
+							DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+								return strings.EqualFold(oldValue, newValue)
+							},
+						},
+						FieldNodeConfigurationEKSTargetGroup: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "AWS target groups configuration for CAST provisioned nodes",
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"arn": {
+										Type:        schema.TypeString,
+										Required:    true,
+										Description: "AWS target group ARN for CAST provisioned nodes",
+									},
+									"port": {
+										Type:             schema.TypeInt,
+										Optional:         true,
+										Description:      "Port for AWS target group for CAST provisioned nodes",
+										ValidateDiagFunc: validation.ToDiagFunc(validation.IntBetween(1, 65535)),
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -233,6 +322,96 @@ func resourceNodeConfiguration() *schema.Resource {
 							Optional:         true,
 							Description:      "Type of managed os disk attached to the node. (See [disk types](https://learn.microsoft.com/en-us/azure/virtual-machines/disks-types)). One of: standard, standard-ssd, premium-ssd (ultra and premium-ssd-v2 are not supported for os disk)",
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"standard", "standard-ssd", "premium-ssd"}, false)),
+						},
+						FieldNodeConfigurationAKSImageFamily: {
+							Type:     schema.TypeString,
+							Optional: true,
+							Description: fmt.Sprintf(
+								"Image OS Family to use when provisioning node in AKS. "+
+									"If both image and family are provided, the system will use provided image and provisioning logic for given family. "+
+									"If only image family is provided, the system will attempt to resolve the latest image from that family based on kubernetes version and node architecture. "+
+									"If image family is omitted, a default family (based on cloud provider) will be used. "+
+									"See Cast.ai documentation for details. Possible values: (%v)", strings.Join([]string{aksImageFamilyUbuntu, aksImageFamilyAzureLinux}, ",")),
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{aksImageFamilyUbuntu, aksImageFamilyAzureLinux}, true)),
+							DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+								return strings.EqualFold(oldValue, newValue)
+							},
+						},
+						FieldNodeConfigurationAKSEphemeralOSDisk: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "Ephemeral OS disk configuration for CAST provisioned nodes",
+							MaxItems:    1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"placement": {
+										Type:             schema.TypeString,
+										Required:         true,
+										Description:      "Placement of the ephemeral OS disk. One of: cacheDisk, resourceDisk",
+										ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{aksEphemeralDiskPlacementCacheDisk, aksEphemeralDiskPlacementResourceDisk}, true)),
+										DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+											return strings.EqualFold(oldValue, newValue)
+										},
+									},
+									"cache": {
+										Type:             schema.TypeString,
+										Optional:         true,
+										Description:      "Cache type for the ephemeral OS disk. One of: ReadOnly, ReadWrite",
+										ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{aksDiskCacheReadOnly, aksDiskCacheReadWrite}, true)),
+										DiffSuppressFunc: func(k, oldValue, newValue string, d *schema.ResourceData) bool {
+											return strings.EqualFold(oldValue, newValue)
+										},
+									},
+								},
+							},
+						},
+						FieldNodeConfigurationLoadbalancers: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "Load balancer configuration for CAST provisioned nodes",
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"id": {
+										Type:        schema.TypeString,
+										Description: "The full ID of the load balancer in azure.",
+										Optional:    true, // Can't make it required as it was added after `name` so it'd be a breaking change.
+									},
+									"name": {
+										Type:        schema.TypeString,
+										Description: "Name of load balancer",
+										Optional:    true,
+										Deprecated:  "name field is deprecated, use ID instead. Will be removed in future versions.",
+									},
+									FieldNodeConfigurationAKSLoadbalancerIPPools: {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: "IP based backend pools configuration for CAST provisioned nodes",
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: "Name of the ip based backend pool",
+												},
+											},
+										},
+									},
+									FieldNodeConfigurationAKSLoadbalancerNICPools: {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: "NIC based backend pools configuration for CAST provisioned nodes.",
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: "Name of the NIC based backend pool",
+												},
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -280,6 +459,63 @@ func resourceNodeConfiguration() *schema.Resource {
 							Description:      "Type of boot disk attached to the node. (See [disk types](https://cloud.google.com/compute/docs/disks#pdspecs)). One of: pd-standard, pd-balanced, pd-ssd, pd-extreme ",
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{"pd-standard", "pd-balanced", "pd-ssd", "pd-extreme"}, false)),
 						},
+						"zones": {
+							Type:     schema.TypeList,
+							Optional: true,
+							Elem: &schema.Schema{
+								Type: schema.TypeString,
+							},
+							Description: "List of preferred availability zones to choose from when provisioning new nodes.",
+							Deprecated:  "The argument will be moved into node template.",
+						},
+						"use_ephemeral_storage_local_ssd": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Default:     nil,
+							Description: "Use ephemeral storage local SSD. Defaults to false",
+						},
+						FieldNodeConfigurationLoadbalancers: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "Loadboalancer configuration for CAST provisioned nodes",
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"target_backend_pools": {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: "Target backend pools configuration for CAST provisioned nodes",
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: "Name of the target group",
+												},
+											},
+										},
+									},
+									"unmanaged_instance_groups": {
+										Type:        schema.TypeList,
+										Optional:    true,
+										Description: "Unmanaged instance groups configuration for CAST provisioned nodes",
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"name": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: "Name of the instance group",
+												},
+												"zone": {
+													Type:        schema.TypeString,
+													Required:    true,
+													Description: "Zone of the instance group",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -295,9 +531,10 @@ func resourceNodeConfigurationCreate(ctx context.Context, d *schema.ResourceData
 
 	clusterID := d.Get(FieldClusterID).(string)
 	req := sdk.NodeConfigurationAPICreateConfigurationJSONRequestBody{
-		Name:         d.Get(FieldNodeConfigurationName).(string),
-		DiskCpuRatio: toPtr(int32(d.Get(FieldNodeConfigurationDiskCpuRatio).(int))),
-		MinDiskSize:  toPtr(int32(d.Get(FieldNodeConfigurationMinDiskSize).(int))),
+		Name:            d.Get(FieldNodeConfigurationName).(string),
+		DiskCpuRatio:    toPtr(int32(d.Get(FieldNodeConfigurationDiskCpuRatio).(int))),
+		DrainTimeoutSec: toPtr(int32(d.Get(FieldNodeConfigurationDrainTimeoutSec).(int))),
+		MinDiskSize:     toPtr(int32(d.Get(FieldNodeConfigurationMinDiskSize).(int))),
 	}
 
 	if v, ok := d.GetOk(FieldNodeConfigurationSubnets); ok {
@@ -336,7 +573,7 @@ func resourceNodeConfigurationCreate(ctx context.Context, d *schema.ResourceData
 	}
 
 	// Map provider specific configurations.
-	if v, ok := d.GetOk(FieldNodeConfigurationEKS); ok && len(v.([]interface{})) > 0 {
+	if v, ok := d.GetOk(FieldNodeConfigurationEKS); ok && len(v.([]interface{})) > 0 && v.([]interface{})[0] != nil {
 		req.Eks = toEKSConfig(v.([]interface{})[0].(map[string]interface{}))
 	}
 	if v, ok := d.GetOk(FieldNodeConfigurationKOPS); ok && len(v.([]interface{})) > 0 {
@@ -383,6 +620,9 @@ func resourceNodeConfigurationRead(ctx context.Context, d *schema.ResourceData, 
 	}
 	if err := d.Set(FieldNodeConfigurationDiskCpuRatio, nodeConfig.DiskCpuRatio); err != nil {
 		return diag.FromErr(fmt.Errorf("setting disk cpu ratio: %w", err))
+	}
+	if err := d.Set(FieldNodeConfigurationDrainTimeoutSec, nodeConfig.DrainTimeoutSec); err != nil {
+		return diag.FromErr(fmt.Errorf("setting drain timeout: %w", err))
 	}
 	if err := d.Set(FieldNodeConfigurationMinDiskSize, nodeConfig.MinDiskSize); err != nil {
 		return diag.FromErr(fmt.Errorf("setting min disk size: %w", err))
@@ -444,6 +684,7 @@ func resourceNodeConfigurationRead(ctx context.Context, d *schema.ResourceData, 
 func resourceNodeConfigurationUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	if !d.HasChanges(
 		FieldNodeConfigurationDiskCpuRatio,
+		FieldNodeConfigurationDrainTimeoutSec,
 		FieldNodeConfigurationMinDiskSize,
 		FieldNodeConfigurationSubnets,
 		FieldNodeConfigurationSSHPublicKey,
@@ -465,8 +706,9 @@ func resourceNodeConfigurationUpdate(ctx context.Context, d *schema.ResourceData
 	client := meta.(*ProviderConfig).api
 	clusterID := d.Get(FieldClusterID).(string)
 	req := sdk.NodeConfigurationAPIUpdateConfigurationJSONRequestBody{
-		DiskCpuRatio: toPtr(int32(d.Get(FieldNodeConfigurationDiskCpuRatio).(int))),
-		MinDiskSize:  toPtr(int32(d.Get(FieldNodeConfigurationMinDiskSize).(int))),
+		DiskCpuRatio:    toPtr(int32(d.Get(FieldNodeConfigurationDiskCpuRatio).(int))),
+		DrainTimeoutSec: toPtr(int32(d.Get(FieldNodeConfigurationDrainTimeoutSec).(int))),
+		MinDiskSize:     toPtr(int32(d.Get(FieldNodeConfigurationMinDiskSize).(int))),
 	}
 
 	if v, ok := d.GetOk(FieldNodeConfigurationSubnets); ok {
@@ -569,6 +811,9 @@ func toEKSConfig(obj map[string]interface{}) *sdk.NodeconfigV1EKSConfig {
 	if v, ok := obj["instance_profile_arn"].(string); ok {
 		out.InstanceProfileArn = v
 	}
+	if v, ok := obj["node_group_arn"].(string); ok && v != "" {
+		out.NodeGroupArn = toPtr(v)
+	}
 	if v, ok := obj["key_pair_id"].(string); ok && v != "" {
 		out.KeyPairId = toPtr(v)
 	}
@@ -595,7 +840,53 @@ func toEKSConfig(obj map[string]interface{}) *sdk.NodeconfigV1EKSConfig {
 		out.VolumeKmsKeyArn = toPtr(v)
 	}
 
+	if v, ok := obj["max_pods_per_node_formula"].(string); ok && v != "" {
+		out.MaxPodsPerNodeFormula = toPtr(v)
+	}
+
+	if v, ok := obj["ips_per_prefix"].(int); ok && v != 0 {
+		out.IpsPerPrefix = toPtr(int32(v))
+	}
+
+	if v, ok := obj[FieldNodeConfigurationEKSTargetGroup].([]any); ok && len(v) > 0 {
+		resultTGs := make([]sdk.NodeconfigV1TargetGroup, 0, len(v))
+		for _, tgRaw := range v {
+			if tg, ok := tgRaw.(map[string]any); ok {
+				sdkTG := sdk.NodeconfigV1TargetGroup{}
+				if arn, ok := tg["arn"].(string); ok && arn != "" {
+					sdkTG.Arn = toPtr(arn)
+				}
+				if port, ok := tg["port"].(int); ok && port > 0 && port < 65536 {
+					sdkTG.Port = toPtr(int32(port))
+				}
+				resultTGs = append(resultTGs, sdkTG)
+			}
+		}
+		out.TargetGroups = &resultTGs
+	}
+
+	if v, ok := obj[FieldNodeConfigurationEKSImageFamily].(string); ok {
+		out.ImageFamily = toEKSImageFamily(v)
+	}
+
 	return out
+}
+
+func toEKSImageFamily(v string) *sdk.NodeconfigV1EKSConfigImageFamily {
+	if v == "" {
+		return nil
+	}
+
+	switch strings.ToLower(v) {
+	case eksImageFamilyAL2:
+		return lo.ToPtr(sdk.NodeconfigV1EKSConfigImageFamilyFamilyAl2)
+	case eksImageFamilyAL2023:
+		return lo.ToPtr(sdk.NodeconfigV1EKSConfigImageFamilyFAMILYAL2023)
+	case eksImageFamilyBottlerocket:
+		return lo.ToPtr(sdk.NodeconfigV1EKSConfigImageFamilyFAMILYBOTTLEROCKET)
+	default:
+		return nil
+	}
 }
 
 func flattenEKSConfig(config *sdk.NodeconfigV1EKSConfig) []map[string]interface{} {
@@ -608,6 +899,9 @@ func flattenEKSConfig(config *sdk.NodeconfigV1EKSConfig) []map[string]interface{
 	}
 	if v := config.KeyPairId; v != nil {
 		m["key_pair_id"] = toString(v)
+	}
+	if v := config.NodeGroupArn; v != nil {
+		m["node_group_arn"] = toString(v)
 	}
 	if v := config.DnsClusterIp; v != nil {
 		m["dns_cluster_ip"] = toString(v)
@@ -635,7 +929,52 @@ func flattenEKSConfig(config *sdk.NodeconfigV1EKSConfig) []map[string]interface{
 		m["volume_kms_key_arn"] = toString(config.VolumeKmsKeyArn)
 	}
 
+	if v := config.MaxPodsPerNodeFormula; v != nil {
+		m["max_pods_per_node_formula"] = toString(config.MaxPodsPerNodeFormula)
+	}
+
+	if v := config.IpsPerPrefix; v != nil {
+		m["ips_per_prefix"] = *config.IpsPerPrefix
+	}
+
+	if v := config.TargetGroups; v != nil && len(*v) > 0 {
+		tgs := make([]any, 0, len(*v))
+		for _, tg := range *v {
+			if tg.Arn == nil {
+				// Empty arn is invalid, ignore the entry
+				continue
+			}
+
+			val := map[string]any{
+				"arn": *tg.Arn,
+			}
+			if tg.Port != nil {
+				val["port"] = *tg.Port
+			}
+			tgs = append(tgs, val)
+		}
+
+		m[FieldNodeConfigurationEKSTargetGroup] = tgs
+	}
+
+	if v := config.ImageFamily; v != nil {
+		m[FieldNodeConfigurationEKSImageFamily] = fromEKSImageFamily(*v)
+	}
+
 	return []map[string]interface{}{m}
+}
+
+func fromEKSImageFamily(family sdk.NodeconfigV1EKSConfigImageFamily) string {
+	switch family {
+	case sdk.NodeconfigV1EKSConfigImageFamilyFAMILYBOTTLEROCKET, sdk.NodeconfigV1EKSConfigImageFamilyFamilyBottlerocket:
+		return eksImageFamilyBottlerocket
+	case sdk.NodeconfigV1EKSConfigImageFamilyFAMILYAL2, sdk.NodeconfigV1EKSConfigImageFamilyFamilyAl2:
+		return eksImageFamilyAL2
+	case sdk.NodeconfigV1EKSConfigImageFamilyFAMILYAL2023, sdk.NodeconfigV1EKSConfigImageFamilyFamilyAl2023:
+		return eksImageFamilyAL2023
+	default:
+		return ""
+	}
 }
 
 func toKOPSConfig(obj map[string]interface{}) *sdk.NodeconfigV1KOPSConfig {
@@ -677,7 +1016,110 @@ func toAKSSConfig(obj map[string]interface{}) *sdk.NodeconfigV1AKSConfig {
 		out.OsDiskType = toAKSOSDiskType(v)
 	}
 
+	if v, ok := obj[FieldNodeConfigurationAKSEphemeralOSDisk].([]any); ok && len(v) > 0 {
+		out.OsDiskEphemeral = toAKSEphemeralOSDisk(v[0])
+	}
+
+	if v, ok := obj[FieldNodeConfigurationAKSImageFamily].(string); ok {
+		out.ImageFamily = toAKSImageFamily(v)
+	}
+
+	if v, ok := obj[FieldNodeConfigurationLoadbalancers].([]interface{}); ok && len(v) > 0 {
+		out.LoadBalancers = toAksLoadBalancers(v)
+	}
+
 	return out
+}
+
+func toAKSEphemeralOSDisk(obj any) *sdk.NodeconfigV1AKSConfigOsDiskEphemeral {
+	if obj == nil {
+		return nil
+	}
+
+	osDisk := &sdk.NodeconfigV1AKSConfigOsDiskEphemeral{}
+
+	if v, ok := obj.(map[string]any)["placement"].(string); ok && v != "" {
+		switch v {
+		case aksEphemeralDiskPlacementResourceDisk:
+			osDisk.Placement = lo.ToPtr(sdk.PLACEMENTRESOURCEDISK)
+		case aksEphemeralDiskPlacementCacheDisk:
+			osDisk.Placement = lo.ToPtr(sdk.PLACEMENTCACHEDISK)
+		}
+	}
+
+	if v, ok := obj.(map[string]any)["cache"].(string); ok && v != "" {
+		switch v {
+		case aksDiskCacheReadWrite:
+			osDisk.CacheType = lo.ToPtr(sdk.NodeconfigV1AKSConfigOsDiskEphemeralCacheTypeREADWRITE)
+		case aksDiskCacheReadOnly:
+			osDisk.CacheType = lo.ToPtr(sdk.NodeconfigV1AKSConfigOsDiskEphemeralCacheTypeREADONLY)
+		}
+	}
+
+	return osDisk
+}
+
+func toAksLoadBalancers(obj []interface{}) *[]sdk.NodeconfigV1AKSConfigLoadBalancers {
+	if obj == nil {
+		return nil
+	}
+
+	out := make([]sdk.NodeconfigV1AKSConfigLoadBalancers, 0, len(obj))
+	for _, lbRaw := range obj {
+		if lb, ok := lbRaw.(map[string]interface{}); ok {
+			sdkLB := sdk.NodeconfigV1AKSConfigLoadBalancers{}
+			if id, ok := lb["id"].(string); ok && id != "" {
+				sdkLB.Id = lo.ToPtr(id)
+			}
+			if name, ok := lb["name"].(string); ok && name != "" {
+				//nolint:staticcheck //We have to do this until we drop the field in TF major provider version.
+				sdkLB.Name = lo.ToPtr(name)
+			}
+			if ipBasedBackendPools, ok := lb[FieldNodeConfigurationAKSLoadbalancerIPPools].([]interface{}); ok && len(ipBasedBackendPools) > 0 {
+				sdkLB.IpBasedBackendPools = toAksIpBasedBackendPools(ipBasedBackendPools)
+			}
+			if nicBasedBackendPools, ok := lb[FieldNodeConfigurationAKSLoadbalancerNICPools].([]interface{}); ok && len(nicBasedBackendPools) > 0 {
+				sdkLB.NicBasedBackendPools = toAksNICBasedBackendPools(nicBasedBackendPools)
+			}
+			out = append(out, sdkLB)
+		}
+	}
+
+	return &out
+}
+
+func toAksIpBasedBackendPools(obj []interface{}) *[]sdk.NodeconfigV1AKSConfigLoadBalancersIPBasedBackendPool {
+	if obj == nil {
+		return nil
+	}
+
+	pools := lo.Map(extractAksBackendPoolNames(obj), func(name string, _ int) sdk.NodeconfigV1AKSConfigLoadBalancersIPBasedBackendPool {
+		return sdk.NodeconfigV1AKSConfigLoadBalancersIPBasedBackendPool{Name: lo.ToPtr(name)}
+	})
+	return &pools
+}
+
+func toAksNICBasedBackendPools(obj []any) *[]sdk.NodeconfigV1AKSConfigLoadBalancersNICBasedBackendPool {
+	if obj == nil {
+		return nil
+	}
+
+	pools := lo.Map(extractAksBackendPoolNames(obj), func(name string, _ int) sdk.NodeconfigV1AKSConfigLoadBalancersNICBasedBackendPool {
+		return sdk.NodeconfigV1AKSConfigLoadBalancersNICBasedBackendPool{Name: lo.ToPtr(name)}
+	})
+	return &pools
+}
+
+func extractAksBackendPoolNames(pools []any) []string {
+	return lo.Reduce(pools, func(names []string, poolRaw any, _ int) []string {
+		if pool, ok := poolRaw.(map[string]interface{}); ok {
+			if name, ok := pool["name"].(string); ok && name != "" {
+				names = append(names, name)
+			}
+		}
+
+		return names
+	}, make([]string, 0))
 }
 
 func toAKSOSDiskType(v string) *sdk.NodeconfigV1AKSConfigOsDiskType {
@@ -697,6 +1139,21 @@ func toAKSOSDiskType(v string) *sdk.NodeconfigV1AKSConfigOsDiskType {
 	}
 }
 
+func toAKSImageFamily(v string) *sdk.NodeconfigV1AKSConfigImageFamily {
+	if v == "" {
+		return nil
+	}
+
+	switch strings.ToLower(v) {
+	case aksImageFamilyUbuntu:
+		return lo.ToPtr(sdk.NodeconfigV1AKSConfigImageFamilyFAMILYUBUNTU)
+	case aksImageFamilyAzureLinux:
+		return lo.ToPtr(sdk.NodeconfigV1AKSConfigImageFamilyFAMILYAZURELINUX)
+	default:
+		return nil
+	}
+}
+
 func flattenAKSConfig(config *sdk.NodeconfigV1AKSConfig) []map[string]interface{} {
 	if config == nil {
 		return nil
@@ -706,11 +1163,103 @@ func flattenAKSConfig(config *sdk.NodeconfigV1AKSConfig) []map[string]interface{
 		m["max_pods_per_node"] = *config.MaxPodsPerNode
 	}
 
-	if v := config.MaxPodsPerNode; v != nil {
+	if v := config.OsDiskType; v != nil {
 		m["os_disk_type"] = fromAKSDiskType(config.OsDiskType)
 	}
 
+	if v := config.ImageFamily; v != nil {
+		m[FieldNodeConfigurationAKSImageFamily] = fromAKSImageFamily(*v)
+	}
+
+	if v := config.LoadBalancers; v != nil && len(*v) > 0 {
+		m[FieldNodeConfigurationLoadbalancers] = fromAksLoadBalancers(*v)
+	}
+
+	if v := config.OsDiskEphemeral; v != nil {
+		m[FieldNodeConfigurationAKSEphemeralOSDisk] = fromAKSEphemeralOSDisk(v)
+	}
+
 	return []map[string]interface{}{m}
+}
+
+func fromAKSEphemeralOSDisk(sdkEph *sdk.NodeconfigV1AKSConfigOsDiskEphemeral) []map[string]interface{} {
+	if sdkEph == nil {
+		return nil
+	}
+
+	m := map[string]interface{}{}
+	if sdkEph.Placement != nil {
+		switch *sdkEph.Placement {
+		case sdk.PLACEMENTRESOURCEDISK:
+			m["placement"] = aksEphemeralDiskPlacementResourceDisk
+		case sdk.PLACEMENTCACHEDISK:
+			m["placement"] = aksEphemeralDiskPlacementCacheDisk
+		}
+	}
+
+	if sdkEph.CacheType != nil {
+		switch *sdkEph.CacheType {
+		case sdk.NodeconfigV1AKSConfigOsDiskEphemeralCacheTypeREADWRITE:
+			m["cache"] = aksDiskCacheReadWrite
+		case sdk.NodeconfigV1AKSConfigOsDiskEphemeralCacheTypeREADONLY:
+			m["cache"] = aksDiskCacheReadOnly
+		}
+	}
+
+	return []map[string]interface{}{m}
+}
+
+func fromAksLoadBalancers(lbs []sdk.NodeconfigV1AKSConfigLoadBalancers) []map[string]interface{} {
+	if lbs == nil {
+		return nil
+	}
+
+	out := make([]map[string]interface{}, 0, len(lbs))
+	for _, lb := range lbs {
+		m := map[string]interface{}{}
+		if lb.Id != nil {
+			m["id"] = *lb.Id
+		}
+		//nolint:staticcheck //We have to do this until we drop the field in TF major provider version.
+		if lb.Name != nil {
+			//nolint:staticcheck //We have to do this until we drop the field in TF major provider version.
+			m["name"] = *lb.Name
+		}
+		if lb.IpBasedBackendPools != nil && len(*lb.IpBasedBackendPools) > 0 {
+			m[FieldNodeConfigurationAKSLoadbalancerIPPools] = fromAksIpBasedBackendPoolNames(lo.FilterMap(*lb.IpBasedBackendPools, func(pool sdk.NodeconfigV1AKSConfigLoadBalancersIPBasedBackendPool, _ int) (string, bool) {
+				if pool.Name != nil {
+					return *pool.Name, true
+				}
+				return "", false
+			}))
+		}
+		if lb.NicBasedBackendPools != nil && len(*lb.NicBasedBackendPools) > 0 {
+			m[FieldNodeConfigurationAKSLoadbalancerNICPools] = fromAksIpBasedBackendPoolNames(lo.FilterMap(*lb.NicBasedBackendPools, func(pool sdk.NodeconfigV1AKSConfigLoadBalancersNICBasedBackendPool, _ int) (string, bool) {
+				if pool.Name != nil {
+					return *pool.Name, true
+				}
+				return "", false
+			}))
+		}
+		out = append(out, m)
+	}
+
+	return out
+}
+
+func fromAksIpBasedBackendPoolNames(names []string) []map[string]interface{} {
+	if names == nil {
+		return nil
+	}
+
+	out := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		m := map[string]interface{}{}
+		m["name"] = name
+		out = append(out, m)
+	}
+
+	return out
 }
 
 func fromAKSDiskType(osDiskType *sdk.NodeconfigV1AKSConfigOsDiskType) string {
@@ -724,6 +1273,17 @@ func fromAKSDiskType(osDiskType *sdk.NodeconfigV1AKSConfigOsDiskType) string {
 		return "standard-ssd"
 	case sdk.OSDISKTYPEPREMIUMSSD:
 		return "premium-ssd"
+	default:
+		return ""
+	}
+}
+
+func fromAKSImageFamily(family sdk.NodeconfigV1AKSConfigImageFamily) string {
+	switch family {
+	case sdk.NodeconfigV1AKSConfigImageFamilyFAMILYAZURELINUX, sdk.NodeconfigV1AKSConfigImageFamilyFamilyAzureLinux:
+		return aksImageFamilyAzureLinux
+	case sdk.NodeconfigV1AKSConfigImageFamilyFAMILYUBUNTU, sdk.NodeconfigV1AKSConfigImageFamilyFamilyUbuntu:
+		return aksImageFamilyUbuntu
 	default:
 		return ""
 	}
@@ -744,8 +1304,86 @@ func toGKEConfig(obj map[string]interface{}) *sdk.NodeconfigV1GKEConfig {
 	if v, ok := obj["disk_type"].(string); ok && v != "" {
 		out.DiskType = toPtr(v)
 	}
+	if v, ok := obj["zones"].([]interface{}); ok {
+		out.Zones = toPtr(toStringList(v))
+	}
+
+	if v, ok := obj["use_ephemeral_storage_local_ssd"].(bool); ok {
+		out.UseEphemeralStorageLocalSsd = toPtr(v)
+	}
+
+	if v, ok := obj[FieldNodeConfigurationLoadbalancers].([]interface{}); ok && len(v) > 0 {
+		out.LoadBalancers = toGkeLoadBalancers(v)
+	}
 
 	return out
+}
+
+func toGkeLoadBalancers(obj []interface{}) *[]sdk.NodeconfigV1GKEConfigLoadBalancers {
+	if obj == nil {
+		return nil
+	}
+
+	out := make([]sdk.NodeconfigV1GKEConfigLoadBalancers, 0, len(obj))
+	for _, lbRaw := range obj {
+		if lb, ok := lbRaw.(map[string]interface{}); ok {
+			sdkLB := sdk.NodeconfigV1GKEConfigLoadBalancers{}
+			if targetBackendPools, ok := lb["target_backend_pools"].([]interface{}); ok && len(targetBackendPools) > 0 {
+				sdkLB.TargetBackendPools = toGkeTargetBackendPools(targetBackendPools)
+			}
+			if unmanagedInstanceGroups, ok := lb["unmanaged_instance_groups"].([]interface{}); ok && len(unmanagedInstanceGroups) > 0 {
+				sdkLB.UnmanagedInstanceGroups = toGkeUnmanagedInstanceGroups(unmanagedInstanceGroups)
+			}
+
+			if sdkLB.UnmanagedInstanceGroups != nil || sdkLB.TargetBackendPools != nil {
+				out = append(out, sdkLB)
+			}
+		}
+	}
+
+	return &out
+}
+
+func toGkeTargetBackendPools(obj []interface{}) *[]sdk.NodeconfigV1GKEConfigLoadBalancersTargetBackendPools {
+	if obj == nil {
+		return nil
+	}
+
+	out := make([]sdk.NodeconfigV1GKEConfigLoadBalancersTargetBackendPools, 0, len(obj))
+	for _, poolRaw := range obj {
+		if pool, ok := poolRaw.(map[string]interface{}); ok {
+			sdkPool := sdk.NodeconfigV1GKEConfigLoadBalancersTargetBackendPools{}
+			if name, ok := pool["name"].(string); ok && name != "" {
+				sdkPool.Name = lo.ToPtr(name)
+			}
+			out = append(out, sdkPool)
+		}
+	}
+
+	return &out
+}
+
+func toGkeUnmanagedInstanceGroups(obj []interface{}) *[]sdk.NodeconfigV1GKEConfigLoadBalancersUnmanagedInstanceGroups {
+	if obj == nil {
+		return nil
+	}
+
+	out := make([]sdk.NodeconfigV1GKEConfigLoadBalancersUnmanagedInstanceGroups, 0, len(obj))
+	for _, groupRaw := range obj {
+		if group, ok := groupRaw.(map[string]interface{}); ok {
+			sdkGroup := sdk.NodeconfigV1GKEConfigLoadBalancersUnmanagedInstanceGroups{}
+			if name, ok := group["name"].(string); ok && name != "" {
+				sdkGroup.Name = lo.ToPtr(name)
+			}
+			if zone, ok := group["zone"].(string); ok && zone != "" {
+				sdkGroup.Zone = lo.ToPtr(zone)
+			}
+			out = append(out, sdkGroup)
+		}
+	}
+
+	return &out
+
 }
 
 func flattenGKEConfig(config *sdk.NodeconfigV1GKEConfig) []map[string]interface{} {
@@ -762,8 +1400,51 @@ func flattenGKEConfig(config *sdk.NodeconfigV1GKEConfig) []map[string]interface{
 	if v := config.DiskType; v != nil {
 		m["disk_type"] = *v
 	}
+	if v := config.Zones; v != nil {
+		m["zones"] = *v
+	}
+
+	if v := config.UseEphemeralStorageLocalSsd; v != nil {
+		m["use_ephemeral_storage_local_ssd"] = *v
+	}
+
+	if v := config.LoadBalancers; v != nil && len(*v) > 0 {
+		m[FieldNodeConfigurationLoadbalancers] = fromGkeLoadBalancers(*v)
+	}
 
 	return []map[string]interface{}{m}
+}
+
+func fromGkeLoadBalancers(objs []sdk.NodeconfigV1GKEConfigLoadBalancers) []map[string]interface{} {
+	var results []map[string]interface{}
+	for _, obj := range objs {
+		result := make(map[string]interface{})
+		if obj.TargetBackendPools != nil && len(*obj.TargetBackendPools) > 0 {
+			tbp := []map[string]interface{}{}
+			for _, pool := range *obj.TargetBackendPools {
+				tbp = append(tbp, map[string]interface{}{
+					"name": *pool.Name,
+				})
+			}
+			result["target_backend_pools"] = tbp
+		}
+
+		if obj.UnmanagedInstanceGroups != nil && len(*obj.UnmanagedInstanceGroups) > 0 {
+			uig := []map[string]interface{}{}
+			for _, group := range *obj.UnmanagedInstanceGroups {
+				uig = append(uig, map[string]interface{}{
+					"name": *group.Name,
+					"zone": *group.Zone,
+				})
+			}
+			result["unmanaged_instance_groups"] = uig
+		}
+		if len(result) > 0 {
+			results = append(results, result)
+		}
+	}
+
+	return results
 }
 
 func nodeConfigStateImporter(ctx context.Context, d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {

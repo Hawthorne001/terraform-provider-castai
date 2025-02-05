@@ -40,7 +40,7 @@ module "castai-gke-cluster" {
   gke_credentials            = module.castai-gke-iam.private_key
   delete_nodes_on_disconnect = var.delete_nodes_on_disconnect
 
-  default_node_configuration = module.castai-gke-cluster.castai_node_configurations["default"]
+  default_node_configuration_name = "default"
 
   node_configurations = {
     default = {
@@ -62,11 +62,11 @@ module "castai-gke-cluster" {
 
   node_templates = {
     default_by_castai = {
-      name             = "default-by-castai"
-      configuration_id = module.castai-gke-cluster.castai_node_configurations["default"]
-      is_default       = true
-      is_enabled       = true
-      should_taint     = false
+      name               = "default-by-castai"
+      configuration_name = "default"
+      is_default         = true
+      is_enabled         = true
+      should_taint       = false
 
       constraints = {
         on_demand          = true
@@ -77,6 +77,7 @@ module "castai-gke-cluster" {
         spot_diversity_price_increase_limit_percent = 20
       }
     }
+
     spot_tmpl = {
       configuration_id = module.castai-gke-cluster.castai_node_configurations["default"]
       is_enabled       = true
@@ -109,9 +110,8 @@ module "castai-gke-cluster" {
         instance_families = {
           exclude = ["e2"]
         }
-        compute_optimized = false
-        storage_optimized = false
-
+        compute_optimized_state = "disabled"
+        storage_optimized_state = "disabled"
         # Optional: define custom priority for instances selection.
         #
         # 1. Prioritize C2D and C2 spot instances above all else, regardless of price.
@@ -129,45 +129,44 @@ module "castai-gke-cluster" {
           # nothing matches from priority groups.
         ]
       }
-
       custom_instances_enabled = true
     }
   }
 
-  // Configure Autoscaler policies as per API specification https://api.cast.ai/v1/spec/#/PoliciesAPI/PoliciesAPIUpsertClusterPolicies.
-  // Here:
-  //  - unschedulablePods - Unscheduled pods policy
-  //  - nodeDownscaler    - Node deletion policy
-  autoscaler_policies_json = <<-EOT
-    {
-        "enabled": true,
-        "unschedulablePods": {
-            "enabled": true
-        },
-        "nodeDownscaler": {
-            "enabled": true,
-            "emptyNodes": {
-                "enabled": true
-            },
-            "evictor": {
-                "aggressiveMode": false,
-                "cycleInterval": "5m10s",
-                "dryRun": false,
-                "enabled": true,
-                "nodeGracePeriodMinutes": 10,
-                "scopedMode": false
-            }
-        },
-        "nodeTemplatesPartialMatchingEnabled": false,
-        "clusterLimits": {
-            "cpu": {
-                "maxCores": 20,
-                "minCores": 1
-            },
-            "enabled": true
-        }
+  autoscaler_settings = {
+    enabled                                 = true
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods = {
+      enabled = true
     }
-  EOT
+
+    node_downscaler = {
+      enabled = true
+
+      empty_nodes = {
+        enabled = true
+      }
+
+      evictor = {
+        aggressive_mode           = false
+        cycle_interval            = "5m10s"
+        dry_run                   = false
+        enabled                   = true
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits = {
+      enabled = true
+
+      cpu = {
+        max_cores = 20
+        min_cores = 1
+      }
+    }
+  }
 
   // depends_on helps terraform with creating proper dependencies graph in case of resource creation and in this case destroy
   // module "castai-gke-cluster" has to be destroyed before module "castai-gke-iam" and "module.gke"

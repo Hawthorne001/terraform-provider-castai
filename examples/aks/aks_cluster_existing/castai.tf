@@ -3,21 +3,7 @@ data "azurerm_subscription" "current" {}
 
 data "azurerm_kubernetes_cluster" "example" {
   name                = var.cluster_name
-  resource_group_name = var.cluster_rg
-}
-
-provider "castai" {
-  api_url   = var.castai_api_url
-  api_token = var.castai_api_token
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = data.azurerm_kubernetes_cluster.example.kube_config.0.host
-    client_certificate     = base64decode(data.azurerm_kubernetes_cluster.example.kube_config.0.client_certificate)
-    client_key             = base64decode(data.azurerm_kubernetes_cluster.example.kube_config.0.client_key)
-    cluster_ca_certificate = base64decode(data.azurerm_kubernetes_cluster.example.kube_config.0.cluster_ca_certificate)
-  }
+  resource_group_name = var.resource_group
 }
 
 # Configure AKS cluster connection to CAST AI using CAST AI aks-cluster module.
@@ -39,14 +25,15 @@ module "castai-aks-cluster" {
   tenant_id       = data.azurerm_subscription.current.tenant_id
 
 
-  default_node_configuration = module.castai-aks-cluster.castai_node_configurations["default"]
+  default_node_configuration  = module.castai-aks-cluster.castai_node_configurations["default"]
+  install_workload_autoscaler = true
 
   node_configurations = {
     default = {
-      disk_cpu_ratio    = 0
-      subnets           = var.subnets
-      tags              = var.tags
-      max_pods_per_node = 60
+      min_disk_size  = 100
+      disk_cpu_ratio = 0
+      subnets        = var.subnets
+      tags           = var.tags
     }
   }
 
@@ -59,50 +46,83 @@ module "castai-aks-cluster" {
       should_taint     = false
 
       constraints = {
-        on_demand  = true
-        min_cpu    = 8
-        max_cpu    = 96
-        max_memory = 786432
+        on_demand = true
+      }
+    }
+    example_spot_template = {
+      configuration_id = module.castai-aks-cluster.castai_node_configurations["default"]
+      is_enabled       = true
+      should_taint     = true
+
+      custom_labels = {
+        custom-label-key-1 = "custom-label-value-1"
+        custom-label-key-2 = "custom-label-value-2"
+      }
+
+      custom_taints = [
+        {
+          key    = "custom-taint-key-1"
+          value  = "custom-taint-value-1"
+          effect = "NoSchedule"
+        },
+        {
+          key    = "custom-taint-key-2"
+          value  = "custom-taint-value-2"
+          effect = "NoSchedule"
+        }
+      ]
+      constraints = {
+        spot                          = true
+        use_spot_fallbacks            = true
+        fallback_restore_rate_seconds = 1800
+        min_cpu                       = 4
+        max_cpu                       = 100
         instance_families = {
-          exclude = ["standard_FSv2", "standard_Dv4"]
+          exclude = ["standard_FSv2"]
+        }
+        custom_priority = {
+          instance_families = ["standard_Dv4"]
+          spot              = true
         }
       }
     }
   }
 
-  // Configure Autoscaler policies as per API specification https://api.cast.ai/v1/spec/#/PoliciesAPI/PoliciesAPIUpsertClusterPolicies.
-  // Here:
-  //  - unschedulablePods - Unscheduled pods policy
-  //  - nodeDownscaler    - Node deletion policy
-  autoscaler_policies_json = <<-EOT
-    {
-        "enabled": true,
-        "unschedulablePods": {
-            "enabled": true
-        },
-        "nodeDownscaler": {
-            "enabled": true,
-            "emptyNodes": {
-                "enabled": true
-            },
-            "evictor": {
-                "aggressiveMode": false,
-                "cycleInterval": "5m10s",
-                "dryRun": false,
-                "enabled": true,
-                "nodeGracePeriodMinutes": 5,
-                "scopedMode": false
-            }
-        },
-        "clusterLimits": {
-            "cpu": {
-                "maxCores": 100,
-                "minCores": 1
-            },
-            "enabled": false
-        }
+  autoscaler_settings = {
+    enabled                                 = false
+    is_scoped_mode                          = false
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods = {
+      enabled = false
     }
-  EOT
+
+    node_downscaler = {
+      enabled = false
+
+      empty_nodes = {
+        enabled = false
+      }
+
+      evictor = {
+        aggressive_mode           = false
+        cycle_interval            = "60s"
+        dry_run                   = false
+        enabled                   = false
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits = {
+      enabled = false
+
+      cpu = {
+        max_cores = 200
+        min_cores = 1
+      }
+    }
+  }
 
 }
 

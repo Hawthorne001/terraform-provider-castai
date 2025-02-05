@@ -66,7 +66,7 @@ module "castai-eks-cluster" {
   aws_assume_role_arn        = module.castai-eks-role-iam.role_arn
   delete_nodes_on_disconnect = var.delete_nodes_on_disconnect
 
-  default_node_configuration = module.castai-eks-cluster.castai_node_configurations["default"]
+  default_node_configuration_name = "default"
 
   node_configurations = {
     default = {
@@ -103,11 +103,11 @@ module "castai-eks-cluster" {
 
   node_templates = {
     default_by_castai = {
-      name             = "default-by-castai"
-      configuration_id = module.castai-eks-cluster.castai_node_configurations["default"]
-      is_default       = true
-      is_enabled       = true
-      should_taint     = false
+      name               = "default-by-castai"
+      configuration_name = "default"
+      is_default         = true
+      is_enabled         = true
+      should_taint       = false
 
       constraints = {
         on_demand          = true
@@ -122,9 +122,9 @@ module "castai-eks-cluster" {
       }
     }
     spot_tmpl = {
-      configuration_id = module.castai-eks-cluster.castai_node_configurations["default"]
-      is_enabled       = true
-      should_taint     = true
+      configuration_name = "default"
+      is_enabled         = true
+      should_taint       = true
 
       custom_labels = {
         custom-label-key-1 = "custom-label-value-1"
@@ -151,9 +151,9 @@ module "castai-eks-cluster" {
         instance_families = {
           exclude = ["m5"]
         }
-        compute_optimized = false
-        storage_optimized = false
-        is_gpu_only       = false
+        compute_optimized_state = "disabled"
+        storage_optimized_state = "disabled"
+        is_gpu_only             = false
 
         # Optional: define custom priority for instances selection.
         #
@@ -175,40 +175,53 @@ module "castai-eks-cluster" {
     }
   }
 
-  # Configure Autoscaler policies as per API specification https://api.cast.ai/v1/spec/#/PoliciesAPI/PoliciesAPIUpsertClusterPolicies.
-  # Here:
-  #  - unschedulablePods - Unscheduled pods policy
-  #  - nodeDownscaler    - Node deletion policy
-  autoscaler_policies_json = <<-EOT
-    {
-        "enabled": true,
-        "unschedulablePods": {
-            "enabled": true
-        },
-        "nodeDownscaler": {
-            "enabled": true,
-            "emptyNodes": {
-                "enabled": true
-            },
-            "evictor": {
-                "aggressiveMode": false,
-                "cycleInterval": "5m10s",
-                "dryRun": false,
-                "enabled": true,
-                "nodeGracePeriodMinutes": 10,
-                "scopedMode": false
-            }
-        },
-        "nodeTemplatesPartialMatchingEnabled": false,
-        "clusterLimits": {
-            "cpu": {
-                "maxCores": 20,
-                "minCores": 1
-            },
-            "enabled": true
-        }
+  autoscaler_settings = {
+    enabled                                 = true
+    is_scoped_mode                          = false
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods = {
+      enabled = true
+
+      headroom = {
+        enabled           = true
+        cpu_percentage    = 10
+        memory_percentage = 10
+      }
+
+      headroom_spot = {
+        enabled           = true
+        cpu_percentage    = 10
+        memory_percentage = 10
+      }
     }
-  EOT
+
+    node_downscaler = {
+      enabled = true
+
+      empty_nodes = {
+        enabled = true
+      }
+
+      evictor = {
+        aggressive_mode           = false
+        cycle_interval            = "5m10s"
+        dry_run                   = false
+        enabled                   = true
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits = {
+      enabled = true
+
+      cpu = {
+        max_cores = 20
+        min_cores = 1
+      }
+    }
+  }
 
   # depends_on helps Terraform with creating proper dependencies graph in case of resource creation and in this case destroy.
   # module "castai-eks-cluster" has to be destroyed before module "castai-eks-role-iam".

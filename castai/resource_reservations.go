@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
-	"github.com/castai/terraform-provider-castai/castai/reservations"
-	"github.com/castai/terraform-provider-castai/castai/sdk"
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/samber/lo"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/castai/terraform-provider-castai/castai/reservations"
+	"github.com/castai/terraform-provider-castai/castai/sdk"
 )
 
 func resourceReservations() *schema.Resource {
@@ -27,7 +27,8 @@ func resourceReservations() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: reservationsStateImporter,
 		},
-		Description: "Reservation represents cloud service provider reserved instances that can be used by CAST AI autoscaler.",
+		Description:        "Reservation represents cloud service provider reserved instances that can be used by CAST AI autoscaler.",
+		DeprecationMessage: "Use castai_commitments resource instead.",
 
 		Timeouts: &schema.ResourceTimeout{
 			Create: schema.DefaultTimeout(2 * time.Minute),
@@ -138,8 +139,8 @@ func reservationsStateImporter(ctx context.Context, d *schema.ResourceData, meta
 }
 
 func resourceCastaiReservationsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
-	log.Printf("[INFO] Get reservations call start")
-	defer log.Printf("[INFO] Get reservations call end")
+	tflog.Info(ctx, "Get reservations call start")
+	defer tflog.Info(ctx, "Get reservations call end")
 
 	organizationId, err := getOrganizationId(ctx, d, meta)
 	if err != nil {
@@ -169,15 +170,15 @@ func resourceCastaiReservationsDelete(ctx context.Context, data *schema.Resource
 }
 
 func resourceCastaiReservationsUpdate(ctx context.Context, data *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	log.Printf("[INFO] Update reservations call start")
-	defer log.Printf("[INFO] Update reservations call end")
+	tflog.Info(ctx, "Update reservations call start")
+	defer tflog.Info(ctx, "Update reservations call end")
 
 	return resourceCastaiReservationsUpsert(ctx, data, meta)
 }
 
 func resourceCastaiReservationsCreate(ctx context.Context, data *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	log.Printf("[INFO] Create reservations call start")
-	defer log.Printf("[INFO] Create reservations call end")
+	tflog.Info(ctx, "Create reservations call start")
+	defer tflog.Info(ctx, "Create reservations call end")
 
 	return resourceCastaiReservationsUpsert(ctx, data, meta)
 }
@@ -274,7 +275,7 @@ func getOrganizationId(ctx context.Context, d *schema.ResourceData, meta any) (s
 		return organizationId.String(), nil
 	}
 
-	response, err := client.UsersAPIListOrganizationsWithResponse(ctx, &sdk.UsersAPIListOrganizationsParams{})
+	response, err := client.UsersAPIListOrganizationsWithResponse(ctx)
 	if checkErr := sdk.CheckOKResponse(response, err); checkErr != nil {
 		return "", fmt.Errorf("fetching organizations: %w", checkErr)
 	}

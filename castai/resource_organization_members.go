@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/castai/terraform-provider-castai/castai/sdk"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/samber/lo"
+
+	"github.com/castai/terraform-provider-castai/castai/sdk"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 	FieldOrganizationMembersMembers        = "members"
 )
 
-const (
+var (
 	ownerRole  = "owner"
 	viewerRole = "viewer"
 	memberRole = "member"
@@ -96,7 +97,7 @@ func resourceOrganizationMembersCreate(ctx context.Context, data *schema.Resourc
 			}
 
 			newMemberships = append(newMemberships, sdk.CastaiUsersV1beta1NewMembershipByEmail{
-				Role:      ownerRole,
+				Role:      &ownerRole,
 				UserEmail: email,
 			})
 		}
@@ -107,7 +108,7 @@ func resourceOrganizationMembersCreate(ctx context.Context, data *schema.Resourc
 
 		for _, email := range emails {
 			newMemberships = append(newMemberships, sdk.CastaiUsersV1beta1NewMembershipByEmail{
-				Role:      viewerRole,
+				Role:      &viewerRole,
 				UserEmail: email,
 			})
 		}
@@ -118,7 +119,7 @@ func resourceOrganizationMembersCreate(ctx context.Context, data *schema.Resourc
 
 		for _, email := range emails {
 			newMemberships = append(newMemberships, sdk.CastaiUsersV1beta1NewMembershipByEmail{
-				Role:      memberRole,
+				Role:      &memberRole,
 				UserEmail: email,
 			})
 		}
@@ -142,7 +143,7 @@ func resourceOrganizationMembersRead(ctx context.Context, data *schema.ResourceD
 	client := meta.(*ProviderConfig).api
 
 	organizationID := data.Id()
-	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID)
+	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID, &sdk.UsersAPIListOrganizationUsersParams{})
 	if err := sdk.CheckOKResponse(usersResp, err); err != nil {
 		return diag.FromErr(fmt.Errorf("retrieving users: %w", err))
 	}
@@ -164,7 +165,8 @@ func resourceOrganizationMembersRead(ctx context.Context, data *schema.ResourceD
 		invitationsResp, err := client.UsersAPIListInvitationsWithResponse(ctx, &sdk.UsersAPIListInvitationsParams{
 			PageCursor: &nextCursor,
 		})
-		if err := sdk.CheckOKResponse(usersResp, err); err != nil {
+
+		if err := sdk.CheckOKResponse(invitationsResp, err); err != nil {
 			return diag.FromErr(fmt.Errorf("retrieving pending invitations: %w", err))
 		}
 
@@ -208,7 +210,7 @@ func resourceOrganizationMembersUpdate(ctx context.Context, data *schema.Resourc
 	client := meta.(*ProviderConfig).api
 	organizationID := data.Id()
 
-	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID)
+	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID, &sdk.UsersAPIListOrganizationUsersParams{})
 	if err := sdk.CheckOKResponse(usersResp, err); err != nil {
 		return diag.FromErr(fmt.Errorf("retrieving users: %w", err))
 	}
@@ -284,7 +286,7 @@ func resourceOrganizationMembersUpdate(ctx context.Context, data *schema.Resourc
 	newMemberships := make([]sdk.CastaiUsersV1beta1NewMembershipByEmail, 0, len(manipulations.membersToAdd))
 	for user, role := range manipulations.membersToAdd {
 		newMemberships = append(newMemberships, sdk.CastaiUsersV1beta1NewMembershipByEmail{
-			Role:      role,
+			Role:      &role,
 			UserEmail: user,
 		})
 	}
@@ -308,7 +310,7 @@ func resourceOrganizationMembersDelete(ctx context.Context, data *schema.Resourc
 		return diag.FromErr(fmt.Errorf("retrieving current user profile: %w", err))
 	}
 
-	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID)
+	usersResp, err := client.UsersAPIListOrganizationUsersWithResponse(ctx, organizationID, &sdk.UsersAPIListOrganizationUsersParams{})
 	if err := sdk.CheckOKResponse(usersResp, err); err != nil {
 		return diag.FromErr(fmt.Errorf("retrieving users: %w", err))
 	}

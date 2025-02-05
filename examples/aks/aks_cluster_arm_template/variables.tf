@@ -12,7 +12,7 @@ variable "cluster_region" {
 variable "cluster_version" {
   type        = string
   description = "AKS cluster version."
-  default     = "1.27"
+  default     = "1.28"
 }
 
 variable "castai_api_url" {
@@ -43,4 +43,9 @@ variable "tags" {
   type        = map(any)
   description = "Optional tags for new cluster nodes. This parameter applies only to new nodes - tags for old nodes are not reconciled."
   default     = {}
+}
+
+variable "subscription_id" {
+  type        = string
+  description = "Azure subscription ID"
 }

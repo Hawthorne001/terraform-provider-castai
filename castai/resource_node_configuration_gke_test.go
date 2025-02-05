@@ -9,6 +9,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
 )
 
+const (
+	// acceptanceTestClusterSubnetworkName points to the subnet that the acceptance test cluster uses.
+	// Actual value (should) be managed by our IaC repository and could be shared with other clusters as well.
+	acceptanceTestClusterSubnetworkName = "ext-prov-e2e-shared-ip-range-nodes"
+)
+
 func TestAccResourceNodeConfiguration_gke(t *testing.T) {
 	rName := fmt.Sprintf("%v-node-cfg-%v", ResourcePrefix, acctest.RandString(8))
 	resourceName := "castai_node_configuration.test"
@@ -25,6 +31,7 @@ func TestAccResourceNodeConfiguration_gke(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "name", rName),
 					resource.TestCheckResourceAttr(resourceName, "disk_cpu_ratio", "35"),
+					resource.TestCheckResourceAttr(resourceName, "drain_timeout_sec", "10"),
 					resource.TestCheckResourceAttr(resourceName, "min_disk_size", "122"),
 					resource.TestCheckResourceAttr(resourceName, "aks.#", "0"),
 					resource.TestCheckResourceAttr(resourceName, "eks.#", "0"),
@@ -33,6 +40,7 @@ func TestAccResourceNodeConfiguration_gke(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "gke.0.disk_type", "pd-balanced"),
 					resource.TestCheckResourceAttr(resourceName, "gke.0.network_tags.0", "ab"),
 					resource.TestCheckResourceAttr(resourceName, "gke.0.network_tags.1", "bc"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.zones.#", "0"),
 				),
 			},
 			{
@@ -47,6 +55,14 @@ func TestAccResourceNodeConfiguration_gke(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "gke.0.disk_type", "pd-ssd"),
 					resource.TestCheckResourceAttr(resourceName, "gke.0.network_tags.0", "bb"),
 					resource.TestCheckResourceAttr(resourceName, "gke.0.network_tags.1", "dd"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.zones.0", "us-central1-c"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.use_ephemeral_storage_local_ssd", "true"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.0.target_backend_pools.0.name", "tg-1"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.0.unmanaged_instance_groups.0.name", "ig-1"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.0.unmanaged_instance_groups.0.zone", "us-central1-c"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.0.unmanaged_instance_groups.1.name", "ig-2"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.0.unmanaged_instance_groups.1.zone", "us-central1-b"),
+					resource.TestCheckResourceAttr(resourceName, "gke.0.loadbalancers.1.target_backend_pools.0.name", "tg-2"),
 				),
 			},
 		},
@@ -69,6 +85,7 @@ resource "castai_node_configuration" "test" {
   name   		    = %[1]q
   cluster_id        = castai_gke_cluster.test.id
   disk_cpu_ratio    = 35
+  drain_timeout_sec = 10
   min_disk_size     = 122
   subnets   	    = [local.subnet_id]
   tags = {
@@ -103,6 +120,26 @@ resource "castai_node_configuration" "test" {
 	max_pods_per_node = 32
     network_tags = ["bb", "dd"]
     disk_type = "pd-ssd"
+    zones = ["us-central1-c"]
+    use_ephemeral_storage_local_ssd = true
+	loadbalancers {
+		target_backend_pools {
+			name = "tg-1"
+		}
+		unmanaged_instance_groups {
+			name = "ig-1"
+			zone = "us-central1-c"
+     	}
+		unmanaged_instance_groups {
+			name = "ig-2"
+			zone = "us-central1-b"
+     	}
+	}
+	loadbalancers {
+		target_backend_pools {
+			name = "tg-2"
+		}
+  	}
   }
 }
 `, rName))
@@ -120,6 +157,7 @@ resource "castai_gke_cluster" "test" {
 }
 
 func testAccGCPConfig(rName, clusterName, projectID string) string {
+
 	return fmt.Sprintf(`
 
 locals {
@@ -127,7 +165,7 @@ locals {
   cluster_name = %[1]q
   service_account_email = "${local.service_account_id}@$%[2]s.iam.gserviceaccount.com"
   custom_role_id        = "castai.tfAcc.${substr(sha1(local.service_account_id),0,8)}.tf"
-  subnet_id = "projects/%[2]s/regions/us-central1/subnetworks/%[1]s-ip-range-nodes"
+  subnet_id = "projects/%[2]s/regions/us-central1/subnetworks/%[4]s"
 }
 
 resource "google_service_account" "castai_service_account" {
@@ -170,5 +208,5 @@ resource "google_service_account_key" "castai_key" {
   public_key_type    = "TYPE_X509_PEM_FILE"
 }
 
-`, clusterName, projectID, rName)
+`, clusterName, projectID, rName, acceptanceTestClusterSubnetworkName)
 }
