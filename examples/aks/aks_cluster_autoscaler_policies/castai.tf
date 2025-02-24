@@ -36,7 +36,7 @@ module "castai-aks-cluster" {
   subscription_id = data.azurerm_subscription.current.subscription_id
   tenant_id       = data.azurerm_subscription.current.tenant_id
 
-  default_node_configuration = module.castai-aks-cluster.castai_node_configurations["default"]
+  default_node_configuration_name = "default"
 
   node_configurations = {
     default = {
@@ -55,11 +55,11 @@ module "castai-aks-cluster" {
 
   node_templates = {
     default_by_castai = {
-      name             = "default-by-castai"
-      configuration_id = module.castai-aks-cluster.castai_node_configurations["default"]
-      is_default       = true
-      is_enabled       = true
-      should_taint     = false
+      name               = "default-by-castai"
+      configuration_name = "default"
+      is_default         = true
+      is_enabled         = true
+      should_taint       = false
 
       constraints = {
         on_demand          = true
@@ -71,9 +71,9 @@ module "castai-aks-cluster" {
       }
     }
     spot_tmpl = {
-      configuration_id = module.castai-aks-cluster.castai_node_configurations["default"]
-      is_enabled       = true
-      should_taint     = true
+      configuration_name = "default"
+      is_enabled         = true
+      should_taint       = true
 
       custom_labels = {
         custom-label-key-1 = "custom-label-value-1"
@@ -100,8 +100,8 @@ module "castai-aks-cluster" {
         instance_families = {
           exclude = ["standard_DPLSv5"]
         }
-        compute_optimized = false
-        storage_optimized = false
+        compute_optimized_state = "disabled"
+        storage_optimized_state = "disabled"
 
         # Optional: define custom priority for instances selection.
         #
@@ -123,39 +123,52 @@ module "castai-aks-cluster" {
     }
   }
 
-  // Configure Autoscaler policies as per API specification https://api.cast.ai/v1/spec/#/PoliciesAPI/PoliciesAPIUpsertClusterPolicies.
-  // Here:
-  //  - unschedulablePods - Unscheduled pods policy
-  //  - nodeDownscaler    - Node deletion policy
-  autoscaler_policies_json = <<-EOT
-    {
-        "enabled": true,
-        "unschedulablePods": {
-            "enabled": true
-        },
-        "nodeDownscaler": {
-            "enabled": true,
-            "emptyNodes": {
-                "enabled": true
-            },
-            "evictor": {
-                "aggressiveMode": false,
-                "cycleInterval": "5m10s",
-                "dryRun": false,
-                "enabled": true,
-                "nodeGracePeriodMinutes": 10,
-                "scopedMode": false
-            }
-        },
-        "nodeTemplatesPartialMatchingEnabled": false,
-        "clusterLimits": {
-            "cpu": {
-                "maxCores": 20,
-                "minCores": 1
-            },
-            "enabled": true
-        }
+  autoscaler_settings = {
+    enabled                                 = true
+    is_scoped_mode                          = false
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods = {
+      enabled = true
+
+      headroom = {
+        enabled           = true
+        cpu_percentage    = 10
+        memory_percentage = 10
+      }
+
+      headroom_spot = {
+        enabled           = true
+        cpu_percentage    = 10
+        memory_percentage = 10
+      }
     }
-  EOT
+
+    node_downscaler = {
+      enabled = true
+
+      empty_nodes = {
+        enabled = true
+      }
+
+      evictor = {
+        aggressive_mode           = false
+        cycle_interval            = "5m10s"
+        dry_run                   = false
+        enabled                   = true
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits = {
+      enabled = true
+
+      cpu = {
+        max_cores = 20
+        min_cores = 1
+      }
+    }
+  }
 
 }

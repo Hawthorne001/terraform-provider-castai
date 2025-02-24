@@ -6,10 +6,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
+	"github.com/samber/lo"
 
 	"github.com/castai/terraform-provider-castai/castai/sdk"
 )
@@ -22,6 +22,10 @@ const (
 	FieldAKSClusterClientID          = "client_id"
 	FieldAKSClusterClientSecret      = "client_secret"
 	FieldAKSClusterTenantID          = "tenant_id"
+	FieldAKSHttpProxyConfig          = "http_proxy_config"
+	FieldAKSHttpProxyDestination     = "http_proxy"
+	FieldAKSHttpsProxyDestination    = "https_proxy"
+	FieldAKSNoProxyDestinations      = "no_proxy"
 )
 
 func resourceAKSCluster() *schema.Resource {
@@ -101,6 +105,37 @@ func resourceAKSCluster() *schema.Resource {
 				Computed:    true,
 				Description: "CAST AI internal credentials ID",
 			},
+			FieldAKSHttpProxyConfig: {
+				Type:        schema.TypeList,
+				Optional:    true,
+				MaxItems:    1,
+				Description: "HTTP proxy configuration for CAST AI nodes and node components.",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						FieldAKSHttpProxyDestination: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Description:      "Address to use for proxying HTTP requests.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
+						},
+						FieldAKSHttpsProxyDestination: {
+							Type:             schema.TypeString,
+							Optional:         true,
+							Description:      "Address to use for proxying HTTPS/TLS requests.",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
+						},
+						FieldAKSNoProxyDestinations: {
+							Type:        schema.TypeList,
+							Optional:    true,
+							Description: "List of destinations that should not go through proxy.",
+							Elem: &schema.Schema{
+								Type:             schema.TypeString,
+								ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -125,6 +160,14 @@ func resourceCastaiAKSClusterRead(ctx context.Context, data *schema.ResourceData
 		return nil
 	}
 
+	if resp.JSON200.CredentialsId != nil && *resp.JSON200.CredentialsId != data.Get(FieldClusterCredentialsId) {
+		log.Printf("[WARN] Drift in credentials from state (%q) and in API (%q), resetting client ID to force re-applying credentials from configuration",
+			data.Get(FieldClusterCredentialsId), *resp.JSON200.CredentialsId)
+		if err := data.Set(FieldAKSClusterClientID, "credentials-drift-detected-force-apply"); err != nil {
+			return diag.FromErr(fmt.Errorf("setting client ID: %w", err))
+		}
+	}
+
 	if err := data.Set(FieldClusterCredentialsId, *resp.JSON200.CredentialsId); err != nil {
 		return diag.FromErr(fmt.Errorf("setting credentials: %w", err))
 	}
@@ -132,6 +175,21 @@ func resourceCastaiAKSClusterRead(ctx context.Context, data *schema.ResourceData
 	if aks := resp.JSON200.Aks; aks != nil {
 		if err := data.Set(FieldAKSClusterRegion, toString(aks.Region)); err != nil {
 			return diag.FromErr(fmt.Errorf("setting region: %w", err))
+		}
+
+		var proxyConfig []any
+		if aks.HttpProxyConfig != nil {
+			proxyConfig = []any{
+				map[string]any{
+					FieldAKSHttpProxyDestination:  lo.FromPtr(aks.HttpProxyConfig.HttpProxy),
+					FieldAKSHttpsProxyDestination: lo.FromPtr(aks.HttpProxyConfig.HttpsProxy),
+					FieldAKSNoProxyDestinations:   lo.FromPtr(aks.HttpProxyConfig.NoProxy),
+				},
+			}
+		}
+
+		if err := data.Set(FieldAKSHttpProxyConfig, proxyConfig); err != nil {
+			return diag.FromErr(fmt.Errorf("setting http proxy config: %w", err))
 		}
 	}
 
@@ -186,12 +244,17 @@ func resourceCastaiAKSClusterUpdate(ctx context.Context, data *schema.ResourceDa
 	return resourceCastaiAKSClusterRead(ctx, data, meta)
 }
 
-func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, client *sdk.ClientWithResponses) error {
+func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, client sdk.ClientWithResponsesInterface) error {
 	if !data.HasChanges(
 		FieldAKSClusterClientID,
 		FieldAKSClusterClientSecret,
 		FieldAKSClusterTenantID,
 		FieldAKSClusterSubscriptionID,
+		FieldClusterCredentialsId,
+		FieldAKSHttpProxyConfig,
+		FieldAKSHttpProxyDestination,
+		FieldAKSHttpsProxyDestination,
+		FieldAKSNoProxyDestinations,
 	) {
 		log.Printf("[INFO] Nothing to update in cluster setttings.")
 		return nil
@@ -211,16 +274,25 @@ func updateAKSClusterSettings(ctx context.Context, data *schema.ResourceData, cl
 		return err
 	}
 
-	req.Credentials = &credentials
-
-	// Retries are required for newly created IAM resources to initialise on Azure side.
-	b := backoff.WithContext(backoff.WithMaxRetries(backoff.NewConstantBackOff(10*time.Second), 30), ctx)
-	if err = backoff.Retry(func() error {
-		response, err := client.ExternalClusterAPIUpdateClusterWithResponse(ctx, data.Id(), req)
-		return sdk.CheckOKResponse(response, err)
-	}, b); err != nil {
-		return fmt.Errorf("updating cluster configuration: %w", err)
+	httpProxyConfigBlocks := data.Get(FieldAKSHttpProxyConfig).([]any)
+	var reqHttpProxyConfig *sdk.ExternalclusterV1HttpProxyConfig
+	if len(httpProxyConfigBlocks) > 0 {
+		proxyConfig := httpProxyConfigBlocks[0].(map[string]any)
+		noProxy := make([]string, 0)
+		for _, r := range proxyConfig[FieldAKSNoProxyDestinations].([]any) {
+			noProxy = append(noProxy, r.(string))
+		}
+		reqHttpProxyConfig = &sdk.ExternalclusterV1HttpProxyConfig{
+			HttpProxy:  lo.ToPtr(proxyConfig[FieldAKSHttpProxyDestination].(string)),
+			HttpsProxy: lo.ToPtr(proxyConfig[FieldAKSHttpsProxyDestination].(string)),
+			NoProxy:    lo.ToPtr(noProxy),
+		}
 	}
 
-	return nil
+	req.Credentials = &credentials
+	req.Aks = &sdk.ExternalclusterV1UpdateAKSClusterParams{
+		HttpProxyConfig: reqHttpProxyConfig,
+	}
+
+	return resourceCastaiClusterUpdate(ctx, client, data, &req)
 }

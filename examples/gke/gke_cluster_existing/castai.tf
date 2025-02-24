@@ -4,24 +4,10 @@
 
 data "google_client_config" "default" {}
 
-provider "castai" {
-  api_url   = var.castai_api_url
-  api_token = var.castai_api_token
-}
-
 data "google_container_cluster" "my_cluster" {
   name     = var.cluster_name
   location = var.cluster_region
   project  = var.project_id
-}
-
-
-provider "helm" {
-  kubernetes {
-    host                   = "https://${data.google_container_cluster.my_cluster.endpoint}"
-    token                  = data.google_client_config.default.access_token
-    cluster_ca_certificate = base64decode(data.google_container_cluster.my_cluster.master_auth.0.cluster_ca_certificate)
-  }
 }
 
 # Configure GKE cluster connection using CAST AI gke-cluster module.
@@ -47,24 +33,16 @@ module "castai-gke-cluster" {
   gke_credentials            = module.castai-gke-iam.private_key
   delete_nodes_on_disconnect = var.delete_nodes_on_disconnect
 
-  default_node_configuration = module.castai-gke-cluster.castai_node_configurations["default"]
+  default_node_configuration  = module.castai-gke-cluster.castai_node_configurations["default"]
+  install_workload_autoscaler = true
 
   node_configurations = {
     default = {
-      disk_cpu_ratio = 25
+      min_disk_size  = 100
+      disk_cpu_ratio = 0
       subnets        = var.subnets
       tags           = var.tags
     }
-
-    test_node_config = {
-      disk_cpu_ratio    = 10
-      subnets           = var.subnets
-      tags              = var.tags
-      max_pods_per_node = 40
-      disk_type         = "pd-ssd",
-      network_tags      = ["dev"]
-    }
-
   }
   node_templates = {
     default_by_castai = {
@@ -75,18 +53,15 @@ module "castai-gke-cluster" {
       should_taint     = false
 
       constraints = {
-        on_demand          = true
-        spot               = true
-        use_spot_fallbacks = true
-
-        enable_spot_diversity                       = false
-        spot_diversity_price_increase_limit_percent = 20
+        on_demand = true
       }
     }
-    spot_tmpl = {
-      configuration_id = module.castai-gke-cluster.castai_node_configurations["default"]
-      is_enabled       = true
-      should_taint     = true
+
+    example_spot_template = {
+      configuration_id         = module.castai-gke-cluster.castai_node_configurations["default"]
+      is_enabled               = true
+      should_taint             = true
+      custom_instances_enabled = false # custom_instances_enabled should be set to same value(true or false) at Node templates & unschedulable_pods policy for backward compatability
 
       custom_labels = {
         custom-label-key-1 = "custom-label-value-1"
@@ -106,62 +81,57 @@ module "castai-gke-cluster" {
         }
       ]
       constraints = {
-        fallback_restore_rate_seconds = 1800
         spot                          = true
         use_spot_fallbacks            = true
+        fallback_restore_rate_seconds = 1800
         min_cpu                       = 4
         max_cpu                       = 100
         instance_families = {
           exclude = ["e2"]
         }
-        compute_optimized = false
-        storage_optimized = false
+        custom_priority = {
+          instance_families = ["c5"]
+          spot              = true
+        }
+      }
+    }
+  }
+
+  autoscaler_settings = {
+    enabled                                 = false
+    node_templates_partial_matching_enabled = false
+
+    unschedulable_pods = {
+      enabled                  = false
+      custom_instances_enabled = false # custom_instances_enabled should be set to same value(true or false) at Node templates & unschedulable_pods policy for backward compatability
+    }
+
+    node_downscaler = {
+      enabled = false
+
+      empty_nodes = {
+        enabled = false
       }
 
-      custom_instances_enabled = true
+      evictor = {
+        aggressive_mode           = false
+        cycle_interval            = "60s"
+        dry_run                   = false
+        enabled                   = false
+        node_grace_period_minutes = 10
+        scoped_mode               = false
+      }
+    }
+
+    cluster_limits = {
+      enabled = false
+
+      cpu = {
+        max_cores = 200
+        min_cores = 1
+      }
     }
   }
-
-  // Configure Autoscaler policies as per API specification https://api.cast.ai/v1/spec/#/PoliciesAPI/PoliciesAPIUpsertClusterPolicies.
-  // Here:
-  //  - unschedulablePods - Unscheduled pods policy
-  //  - nodeDownscaler    - Node deletion policy
-
-  # # Commend oout for POC
-  autoscaler_policies_json = <<-EOT
-{
-  "enabled": false,
-  "unschedulablePods": {
-    "enabled": false
-  },
-  "nodeDownscaler": {
-    "enabled": false,
-    "emptyNodes": {
-      "enabled": false
-    },
-    "evictor": {
-      "aggressiveMode": false,
-      "cycleInterval": "5m10s",
-      "dryRun": false,
-      "enabled": false,
-      "nodeGracePeriodMinutes": 10,
-      "scopedMode": false
-    }
-  },
-  "clusterLimits": {
-    "cpu": {
-      "maxCores": 20,
-      "minCores": 1
-    },
-    "enabled": false
-  },
-  "maxReclaimRate": 0,
-  "spotBackups": {
-    "enabled": false,
-    "spotBackupRestoreRateSeconds": 1800
-  }
-}
-  EOT
 
   // depends_on helps terraform with creating proper dependencies graph in case of resource creation and in this case destroy
   // module "castai-gke-cluster" has to be destroyed before module "castai-gke-iam" and "module.gke"

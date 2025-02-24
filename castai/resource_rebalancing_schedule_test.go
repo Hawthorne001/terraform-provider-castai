@@ -42,6 +42,8 @@ func TestAccResourceRebalancingSchedule_basic(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr("castai_rebalancing_schedule.test", "name", rName+" renamed"),
 					resource.TestCheckResourceAttr("castai_rebalancing_schedule.test", "schedule.0.cron", "1 4 * * *"),
+					resource.TestCheckResourceAttr("castai_rebalancing_schedule.test", "launch_configuration.0.aggressive_mode", "true"),
+					resource.TestCheckResourceAttr("castai_rebalancing_schedule.test", "launch_configuration.0.aggressive_mode_config.0.ignore_local_persistent_volumes", "true"),
 				),
 			},
 			{
@@ -91,6 +93,10 @@ resource "castai_rebalancing_schedule" "test" {
 		num_targeted_nodes = 3
 		rebalancing_min_nodes = 2
 		keep_drain_timeout_nodes = true
+		aggressive_mode = true
+		aggressive_mode_config {
+      		ignore_local_persistent_volumes = true
+    	}
 		selector = jsonencode({
 			nodeSelectorTerms = [{
 				matchExpressions = [

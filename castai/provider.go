@@ -3,6 +3,7 @@ package castai
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -12,7 +13,7 @@ import (
 )
 
 type ProviderConfig struct {
-	api *sdk.ClientWithResponses
+	api sdk.ClientWithResponsesInterface
 }
 
 func Provider(version string) *schema.Provider {
@@ -37,6 +38,7 @@ func Provider(version string) *schema.Provider {
 			"castai_eks_cluster":                resourceEKSCluster(),
 			"castai_eks_clusterid":              resourceEKSClusterID(),
 			"castai_gke_cluster":                resourceGKECluster(),
+			"castai_gke_cluster_id":             resourceGKEClusterId(),
 			"castai_aks_cluster":                resourceAKSCluster(),
 			"castai_autoscaler":                 resourceAutoscaler(),
 			"castai_evictor_advanced_config":    resourceEvictionConfig(),
@@ -47,14 +49,21 @@ func Provider(version string) *schema.Provider {
 			"castai_node_configuration_default": resourceNodeConfigurationDefault(),
 			"castai_eks_user_arn":               resourceEKSClusterUserARN(),
 			"castai_reservations":               resourceReservations(),
+			"castai_commitments":                resourceCommitments(),
 			"castai_organization_members":       resourceOrganizationMembers(),
 			"castai_sso_connection":             resourceSSOConnection(),
+			"castai_service_account":            resourceServiceAccount(),
+			"castai_service_account_key":        resourceServiceAccountKey(),
+			"castai_workload_scaling_policy":    resourceWorkloadScalingPolicy(),
+			"castai_organization_group":         resourceOrganizationGroup(),
+			"castai_role_bindings":              resourceRoleBindings(),
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{
-			"castai_eks_settings":      dataSourceEKSSettings(),
-			"castai_gke_user_policies": dataSourceGKEPolicies(),
-			"castai_organization":      dataSourceOrganization(),
+			"castai_eks_settings":         dataSourceEKSSettings(),
+			"castai_gke_user_policies":    dataSourceGKEPolicies(),
+			"castai_organization":         dataSourceOrganization(),
+			"castai_rebalancing_schedule": dataSourceRebalancingSchedule(),
 
 			// TODO: remove in next major release
 			"castai_eks_user_arn": dataSourceEKSClusterUserARN(),
@@ -72,6 +81,10 @@ func providerConfigure(version string) schema.ConfigureContextFunc {
 		apiToken := data.Get("api_token").(string)
 
 		agent := fmt.Sprintf("castai-terraform-provider/%v", version)
+		if addUA := os.Getenv("CASTAI_ADDITIONAL_USER_AGENT"); addUA != "" {
+			agent = fmt.Sprintf("%s %s", agent, addUA)
+		}
+
 		client, err := sdk.CreateClient(apiURL, apiToken, agent)
 		if err != nil {
 			return nil, diag.FromErr(err)

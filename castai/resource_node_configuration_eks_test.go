@@ -43,13 +43,19 @@ func TestAccResourceNodeConfiguration_eks(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "eks.0.key_pair_id", ""),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_type", "gp3"),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_iops", "3100"),
-					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_throughput", "130"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_throughput", "131"),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.imds_v1", "true"),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.imds_hop_limit", "3"),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_kms_key_arn", "arn:aws:kms:eu-central-1:012345:key/1d989ee1-59cd-4238-8018-79bae29d1109"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.target_group.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.max_pods_per_node_formula", "NUM_IP_PER_PREFIX-NUM_MAX_NET_INTERFACES"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.ips_per_prefix", "4"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.eks_image_family", "al2023"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.target_group.0.arn", "arn:aws:test"),
 					resource.TestCheckResourceAttr(resourceName, "aks.#", "0"),
 					resource.TestCheckResourceAttr(resourceName, "kops.#", "0"),
 					resource.TestCheckResourceAttr(resourceName, "gke.#", "0"),
+          resource.TestCheckResourceAttr(resourceName, "eks.0.node_group_arn", "arn:aws:iam::000000000000:role/aws_node_group"),
 				),
 			},
 			{
@@ -65,8 +71,9 @@ func TestAccResourceNodeConfiguration_eks(t *testing.T) {
 				Config: testAccEKSNodeConfigurationUpdated(rName, clusterName),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(resourceName, "disk_cpu_ratio", "0"),
+					resource.TestCheckResourceAttr(resourceName, "drain_timeout_sec", "120"),
 					resource.TestCheckResourceAttr(resourceName, "min_disk_size", "100"),
-					resource.TestCheckResourceAttr(resourceName, "image", "amazon-eks-node-1.23-v20220824"),
+					resource.TestCheckResourceAttr(resourceName, "image", "amazon-eks-node-1.23-v20240817"),
 					resource.TestCheckResourceAttr(resourceName, "init_script", ""),
 					resource.TestCheckResourceAttr(resourceName, "container_runtime", "CONTAINERD"),
 					resource.TestCheckResourceAttr(resourceName, "docker_config", ""),
@@ -74,6 +81,13 @@ func TestAccResourceNodeConfiguration_eks(t *testing.T) {
 					resource.TestCheckResourceAttr(resourceName, "tags.%", "0"),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.dns_cluster_ip", ""),
 					resource.TestCheckResourceAttr(resourceName, "eks.0.security_groups.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.volume_throughput", "130"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.max_pods_per_node_formula", "NUM_IP_PER_PREFIX+NUM_MAX_NET_INTERFACES"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.ips_per_prefix", "3"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.eks_image_family", "al2"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.target_group.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.target_group.0.arn", "arn:aws:test2"),
+					resource.TestCheckResourceAttr(resourceName, "eks.0.target_group.0.port", "80"),
 				),
 			},
 		},
@@ -116,15 +130,22 @@ resource "castai_node_configuration" "test" {
     env = "development"
   }
   eks {
-	instance_profile_arn = aws_iam_instance_profile.test.arn
+	  instance_profile_arn = aws_iam_instance_profile.test.arn
+    node_group_arn = "arn:aws:iam::000000000000:role/aws_node_group"
     dns_cluster_ip       = "10.100.0.10"
-	security_groups      = [aws_security_group.test.id]
-	volume_type 		 = "gp3"
+	  security_groups      = [aws_security_group.test.id]
+	  volume_type 		 = "gp3"
     volume_iops		     = 3100
-	volume_throughput 	 = 130
+	  volume_throughput 	 = 131
     volume_kms_key_arn   = "arn:aws:kms:eu-central-1:012345:key/1d989ee1-59cd-4238-8018-79bae29d1109"
-	imds_v1				 = true
-	imds_hop_limit       = 3
+	  imds_v1				 = true
+	  imds_hop_limit       = 3
+    max_pods_per_node_formula = "NUM_IP_PER_PREFIX-NUM_MAX_NET_INTERFACES"
+	  ips_per_prefix = 4
+	  eks_image_family = "al2023"
+	  target_group {
+	    arn = "arn:aws:test"
+    }
   }
 }
 
@@ -140,8 +161,9 @@ func testAccEKSNodeConfigurationUpdated(rName, clusterName string) string {
 resource "castai_node_configuration" "test" {
   name   		    = %[1]q
   cluster_id        = castai_eks_cluster.test.id
+  drain_timeout_sec = 120
   subnets   	    = data.aws_subnets.core.ids
-  image             = "amazon-eks-node-1.23-v20220824" 
+  image             = "amazon-eks-node-1.23-v20240817" 
   container_runtime = "containerd"
   kubelet_config     = jsonencode({
     "eventRecordQPS": 10
@@ -149,6 +171,14 @@ resource "castai_node_configuration" "test" {
   eks {
 	instance_profile_arn = aws_iam_instance_profile.test.arn
     security_groups      = [aws_security_group.test.id]
+    volume_throughput 	 = 130
+    max_pods_per_node_formula = "NUM_IP_PER_PREFIX+NUM_MAX_NET_INTERFACES"
+	ips_per_prefix = 3
+	eks_image_family = "al2"
+    target_group 	     {
+	   arn = "arn:aws:test2"
+       port = 80
+    }
   }
 }`, rName))
 }

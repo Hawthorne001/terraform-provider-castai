@@ -7,13 +7,14 @@ import (
 	"math"
 	"time"
 
-	"github.com/castai/terraform-provider-castai/castai/sdk"
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/samber/lo"
+
+	"github.com/castai/terraform-provider-castai/castai/sdk"
 )
 
 func resourceRebalancingSchedule() *schema.Resource {
@@ -51,17 +52,17 @@ func resourceRebalancingSchedule() *schema.Resource {
 							Type:             schema.TypeString,
 							Required:         true,
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsNotWhiteSpace),
-							Description:      "Cron expression defining when the schedule should trigger.\n\n"+
-											"  The `cron` expression can optionally include the `CRON_TZ` variable at the beginning to specify the timezone in which the schedule should be interpreted.\n\n"+
-											"  Example:\n"+
-											"  ```plaintext\n"+
-											"  CRON_TZ=America/New_York 0 12 * * ?\n"+
-											"  ```\n"+
-											"  In the example above, the `CRON_TZ` variable is set to \"America/New_York\" indicating that the cron expression should be interpreted in the Eastern Time (ET) timezone.\n\n"+
-											"  To retrieve a list of available timezone values, you can use the following API endpoint:\n\n"+
-											"  GET https://api.cast.ai/v1/time-zones\n\n"+
-											"  When using the `CRON_TZ` variable, ensure that the specified timezone is valid and supported by checking the list of available timezones from the API endpoint."+
-											"  If the `CRON_TZ` variable is not specified, the cron expression will be interpreted in the UTC timezone.",
+							Description: "Cron expression defining when the schedule should trigger.\n\n" +
+								"  The `cron` expression can optionally include the `CRON_TZ` variable at the beginning to specify the timezone in which the schedule should be interpreted.\n\n" +
+								"  Example:\n" +
+								"  ```plaintext\n" +
+								"  CRON_TZ=America/New_York 0 12 * * ?\n" +
+								"  ```\n" +
+								"  In the example above, the `CRON_TZ` variable is set to \"America/New_York\" indicating that the cron expression should be interpreted in the Eastern Time (ET) timezone.\n\n" +
+								"  To retrieve a list of available timezone values, you can use the following API endpoint:\n\n" +
+								"  GET https://api.cast.ai/v1/time-zones\n\n" +
+								"  When using the `CRON_TZ` variable, ensure that the specified timezone is valid and supported by checking the list of available timezones from the API endpoint." +
+								"  If the `CRON_TZ` variable is not specified, the cron expression will be interpreted in the UTC timezone.",
 						},
 					},
 				},
@@ -77,6 +78,12 @@ func resourceRebalancingSchedule() *schema.Resource {
 							Required:         true,
 							ValidateDiagFunc: validation.ToDiagFunc(validation.FloatAtLeast(0.0)),
 							Description:      "Defines the minimum percentage of savings expected.",
+						},
+						"ignore_savings": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Default:     false,
+							Description: "If true, the savings percentage will be ignored and the rebalancing will be triggered regardless of the savings percentage.",
 						},
 					},
 				},
@@ -110,6 +117,26 @@ func resourceRebalancingSchedule() *schema.Resource {
 							Optional:    true,
 							Description: "Defines whether the nodes that failed to get drained until a predefined timeout, will be kept with a rebalancing.cast.ai/status=drain-failed annotation instead of forcefully drained.",
 						},
+						"aggressive_mode": {
+							Type:        schema.TypeBool,
+							Optional:    true,
+							Description: "When enabled rebalancing will also consider problematic pods (pods without controller, job pods, pods with removal-disabled annotation) as not-problematic.",
+						},
+						"aggressive_mode_config": {
+							Type:     schema.TypeList,
+							MaxItems: 1,
+							Optional: true,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"ignore_local_persistent_volumes": {
+										Type:        schema.TypeBool,
+										Required:    true,
+										Description: "Rebalance workloads using local-path Persistent Volumes. THIS WILL RESULT IN DATA LOSS.",
+									},
+								},
+							},
+							Description: "Advanced configuration for aggressive rebalancing mode.",
+						},
 						"execution_conditions": {
 							Type:     schema.TypeList,
 							MaxItems: 1,
@@ -137,6 +164,17 @@ func resourceRebalancingSchedule() *schema.Resource {
 							Optional:         true,
 							Description:      "Node selector in JSON format.",
 							ValidateDiagFunc: validation.ToDiagFunc(validation.StringIsJSON),
+						},
+						"target_node_selection_algorithm": {
+							Type:        schema.TypeString,
+							Optional:    true,
+							Description: "Defines the algorithm used to select the target nodes for rebalancing.",
+							Default:     "TargetNodeSelectionAlgorithmNormalizedPrice",
+							ValidateDiagFunc: validation.ToDiagFunc(validation.StringInSlice([]string{
+								"TargetNodeSelectionAlgorithmNormalizedPrice",
+								"TargetNodeSelectionAlgorithmUtilizedPrice",
+								"TargetNodeSelectionAlgorithmUtilization",
+							}, false)),
 						},
 					},
 				},
@@ -249,6 +287,7 @@ func stateToSchedule(d *schema.ResourceData) (*sdk.ScheduledrebalancingV1Rebalan
 	if triggerConditions := toSection(d, "trigger_conditions"); triggerConditions != nil {
 		result.TriggerConditions = sdk.ScheduledrebalancingV1TriggerConditions{
 			SavingsPercentage: readOptionalNumber[float64, float32](triggerConditions, "savings_percentage"),
+			IgnoreSavings:     readOptionalValue[bool](triggerConditions, "ignore_savings"),
 		}
 	}
 
@@ -269,6 +308,17 @@ func stateToSchedule(d *schema.ResourceData) (*sdk.ScheduledrebalancingV1Rebalan
 			}
 		}
 
+		aggresiveMode := readOptionalValue[bool](launchConfigurationData, "aggressive_mode")
+
+		var aggressiveModeConfig *sdk.ScheduledrebalancingV1AggressiveModeConfig
+		aggressiveModeConfigSection := launchConfigurationData["aggressive_mode_config"].([]any)
+		if len(aggressiveModeConfigSection) != 0 {
+			aggressiveModeConfig = &sdk.ScheduledrebalancingV1AggressiveModeConfig{
+				IgnoreLocalPersistentVolumes: lo.ToPtr(aggressiveModeConfigSection[0].(map[string]any)["ignore_local_persistent_volumes"].(bool)),
+			}
+		}
+
+		targetAlgorithm := sdk.ScheduledrebalancingV1TargetNodeSelectionAlgorithm(*readOptionalValue[string](launchConfigurationData, "target_node_selection_algorithm"))
 		result.LaunchConfiguration = sdk.ScheduledrebalancingV1LaunchConfiguration{
 			NodeTtlSeconds:   readOptionalNumber[int, int32](launchConfigurationData, "node_ttl_seconds"),
 			NumTargetedNodes: readOptionalNumber[int, int32](launchConfigurationData, "num_targeted_nodes"),
@@ -276,8 +326,11 @@ func stateToSchedule(d *schema.ResourceData) (*sdk.ScheduledrebalancingV1Rebalan
 				MinNodes:              readOptionalNumber[int, int32](launchConfigurationData, "rebalancing_min_nodes"),
 				KeepDrainTimeoutNodes: keepDrainTimeoutNodes,
 				ExecutionConditions:   executionConditions,
+				AggressiveMode:        aggresiveMode,
+				AggressiveModeConfig:  aggressiveModeConfig,
 			},
-			Selector: selector,
+			Selector:                     selector,
+			TargetNodeSelectionAlgorithm: &targetAlgorithm,
 		}
 	}
 
@@ -305,6 +358,15 @@ func scheduleToState(schedule *sdk.ScheduledrebalancingV1RebalancingSchedule, d 
 	if schedule.LaunchConfiguration.RebalancingOptions != nil {
 		launchConfig["rebalancing_min_nodes"] = schedule.LaunchConfiguration.RebalancingOptions.MinNodes
 		launchConfig["keep_drain_timeout_nodes"] = schedule.LaunchConfiguration.RebalancingOptions.KeepDrainTimeoutNodes
+		launchConfig["aggressive_mode"] = schedule.LaunchConfiguration.RebalancingOptions.AggressiveMode
+		launchConfig["target_node_selection_algorithm"] = schedule.LaunchConfiguration.TargetNodeSelectionAlgorithm
+		if schedule.LaunchConfiguration.RebalancingOptions.AggressiveModeConfig != nil {
+			launchConfig["aggressive_mode_config"] = []map[string]any{
+				{
+					"ignore_local_persistent_volumes": schedule.LaunchConfiguration.RebalancingOptions.AggressiveModeConfig.IgnoreLocalPersistentVolumes,
+				},
+			}
+		}
 
 		executionConditions := schedule.LaunchConfiguration.RebalancingOptions.ExecutionConditions
 		if executionConditions != nil {
@@ -333,6 +395,7 @@ func scheduleToState(schedule *sdk.ScheduledrebalancingV1RebalancingSchedule, d 
 
 	triggerConditions := map[string]any{
 		"savings_percentage": toFloat64PtrTruncated(schedule.TriggerConditions.SavingsPercentage),
+		"ignore_savings":     schedule.TriggerConditions.IgnoreSavings,
 	}
 	if err := d.Set("trigger_conditions", []map[string]any{triggerConditions}); err != nil {
 		return err
@@ -377,7 +440,7 @@ func nullifySelectorRequirements(requirements *[]sdk.ScheduledrebalancingV1NodeS
 	}
 }
 
-func getRebalancingScheduleByName(ctx context.Context, client *sdk.ClientWithResponses, name string) (*sdk.ScheduledrebalancingV1RebalancingSchedule, error) {
+func getRebalancingScheduleByName(ctx context.Context, client sdk.ClientWithResponsesInterface, name string) (*sdk.ScheduledrebalancingV1RebalancingSchedule, error) {
 	resp, err := client.ScheduledRebalancingAPIListRebalancingSchedulesWithResponse(ctx)
 	if checkErr := sdk.CheckOKResponse(resp, err); checkErr != nil {
 		return nil, checkErr
@@ -392,7 +455,7 @@ func getRebalancingScheduleByName(ctx context.Context, client *sdk.ClientWithRes
 	return nil, fmt.Errorf("rebalancing schedule %q was not found", name)
 }
 
-func getRebalancingScheduleById(ctx context.Context, client *sdk.ClientWithResponses, id string) (*sdk.ScheduledrebalancingV1RebalancingSchedule, error) {
+func getRebalancingScheduleById(ctx context.Context, client sdk.ClientWithResponsesInterface, id string) (*sdk.ScheduledrebalancingV1RebalancingSchedule, error) {
 	resp, err := client.ScheduledRebalancingAPIGetRebalancingScheduleWithResponse(ctx, id)
 	if err != nil {
 		return nil, err
